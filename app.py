@@ -35,9 +35,23 @@ OPCOES_DESPESA_FORM = OPCOES_DESPESA_FIXAS + ["Outro"]
 def formata_real(valor):
     return f"R$ {valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
-# Conexão com o Supabase via Secrets do Streamlit Cloud
-db_url = st.secrets["database"]["url"]
-engine = create_engine(db_url)
+# Conexão blindada com o Supabase via Secrets do Streamlit Cloud
+raw_url = st.secrets["database"]["url"]
+
+# Ajuste automático do driver psycopg e sslmode
+if raw_url.startswith("postgresql://"):
+    raw_url = raw_url.replace("postgresql://", "postgresql+psycopg://", 1)
+elif raw_url.startswith("postgres://"):
+    raw_url = raw_url.replace("postgres://", "postgresql+psycopg://", 1)
+
+if "sslmode" not in raw_url:
+    raw_url += "?sslmode=require" if "?" not in raw_url else "&sslmode=require"
+
+engine = create_engine(
+    raw_url,
+    pool_pre_ping=True,
+    pool_recycle=300
+)
 
 def init_db():
     with engine.begin() as conn:
@@ -272,7 +286,7 @@ else:
 
         st.caption(f"📅 **{dias_trabalhados}** dia(s) trabalhado(s) | Média líquida: **{formata_real(media_lucro_dia)} / dia**")
 
-        # --- SEÇÃO DA TABELA ANTES DOS GRÁFICOS ---
+        # --- SEÇÃO DA TABELA (ANTES DOS GRÁFICOS) ---
         st.markdown("---")
         st.markdown("#### 📋 Lançamentos do Período")
 
@@ -340,6 +354,7 @@ else:
                     txt_saidas = formata_real(total_saidas_filtro).replace("$", "\\$")
                     st.markdown(f"🟢 Entradas: **{txt_entradas}** | 🔴 Saídas: **{txt_saidas}**")
 
+            # Espaçamento para evitar sobreposição dos botões flutuantes da tabela
             st.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
 
             df_tabela["data_formatada"] = df_tabela["data"].dt.strftime("%d/%m/%Y")
@@ -366,7 +381,7 @@ else:
                 use_container_width=True
             )
 
-        # --- SEÇÃO DE GRÁFICOS ---
+        # --- SEÇÃO DE GRÁFICOS (DEPOIS DA TABELA) ---
         st.markdown("---")
         st.markdown("#### 📈 Desempenho no Período")
         
