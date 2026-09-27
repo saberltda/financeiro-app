@@ -21,12 +21,6 @@ st.markdown("""
     .stButton button {
         border-radius: 8px;
     }
-    .card-registro {
-        padding: 10px 14px;
-        border-radius: 8px;
-        background-color: rgba(128, 128, 128, 0.07);
-        margin-bottom: 8px;
-    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -135,11 +129,11 @@ df_completo = carregar_dados()
 if "msg_sucesso" in st.session_state:
     st.success(st.session_state.pop("msg_sucesso"))
 
-# Modais flutuantes nativos para não desordenar as abas
+# Modal de Edição com fechamento garantido no Cancelar
 @st.dialog("✏️ Editar Lançamento")
 def modal_editar_registro(item_id, item_data, item_tipo, item_cat, item_desc, item_val):
     badge = "🟢" if item_tipo == "Receita" else "🔴"
-    st.markdown(f"**Tipo:** {badge} **{item_tipo}** *(fixo)*")
+    st.markdown(f"**Tipo:** {badge} **{item_tipo}**")
     
     with st.form("form_dialog_edicao"):
         c1, c2 = st.columns(2)
@@ -165,11 +159,7 @@ def modal_editar_registro(item_id, item_data, item_tipo, item_cat, item_desc, it
 
         nova_desc = st.text_input("Observação:", value=item_desc if item_desc else "").strip()
 
-        col_b1, col_b2 = st.columns(2)
-        with col_b1:
-            btn_salvar_dialog = st.form_submit_button("💾 Salvar", type="primary", use_container_width=True)
-        with col_b2:
-            btn_cancelar_dialog = st.form_submit_button("✖️ Cancelar", use_container_width=True)
+        btn_salvar_dialog = st.form_submit_button("💾 Salvar Alterações", type="primary", use_container_width=True)
 
         if btn_salvar_dialog:
             v_num = converter_valor(novo_val_str)
@@ -181,6 +171,10 @@ def modal_editar_registro(item_id, item_data, item_tipo, item_cat, item_desc, it
                 atualizar_registro(item_id, nova_data, item_tipo, cat_final, nova_desc, v_num)
                 st.session_state["msg_sucesso"] = f"Lançamento ID #{item_id} atualizado com sucesso!"
                 st.rerun()
+
+    # Botão de cancelar fora do formulário para fechar o diálogo instantaneamente
+    if st.button("✖️ Cancelar e Fechar", use_container_width=True):
+        st.rerun()
 
 @st.dialog("🗑️ Confirmar Exclusão")
 def modal_excluir_registro(item_id, item_cat, item_val_formatado):
@@ -198,7 +192,7 @@ def modal_excluir_registro(item_id, item_cat, item_val_formatado):
         if st.button("✖️ Cancelar", use_container_width=True):
             st.rerun()
 
-# Abas Nativas (Mudança fluida sem conflito de estado)
+# Abas Nativas
 tab_novo, tab_gerenciar = st.tabs(["➕ Novo Lançamento", "⚙️ Gerenciar Registros"])
 
 # --- ABA 1: NOVO LANÇAMENTO ---
