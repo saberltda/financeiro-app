@@ -4,6 +4,7 @@ from datetime import date, timedelta
 import plotly.express as px
 from sqlalchemy import create_engine, text
 import streamlit.components.v1 as components
+import hmac
 
 st.set_page_config(
     page_title="Controle Motorista App", 
@@ -28,13 +29,61 @@ st.markdown("""
         background-color: rgba(128, 128, 128, 0.07);
         margin-bottom: 8px;
     }
-    /* Impede cursor de digitação nos inputs de data */
     div[data-testid="stDateInput"] input {
         caret-color: transparent !important;
         cursor: pointer !important;
     }
 </style>
 """, unsafe_allow_html=True)
+
+# --- SISTEMA DE AUTENTICAÇÃO ---
+def verificar_login():
+    if "autenticado" not in st.session_state:
+        st.session_state["autenticado"] = False
+
+    if st.session_state["autenticado"]:
+        return True
+
+    # Tela de Acesso
+    col_vazia1, col_centro, col_vazia2 = st.columns([1, 2.5, 1])
+    with col_centro:
+        st.markdown("<div style='height: 40px;'></div>", unsafe_allow_html=True)
+        st.markdown("### 🔒 Acesso Restrito")
+        st.caption("Digite suas credenciais para acessar o painel financeiro.")
+
+        with st.form("form_login"):
+            usuario_input = st.text_input("Usuário", placeholder="Ex: admin").strip()
+            senha_input = st.text_input("Senha", type="password", placeholder="••••••••")
+            btn_entrar = st.form_submit_button("🔓 Entrar", use_container_width=True, type="primary")
+
+            if btn_entrar:
+                # Comparações seguras contra timing attacks
+                user_correto = st.secrets["auth"]["username"]
+                senha_correta = st.secrets["auth"]["password"]
+
+                valida_user = hmac.compare_digest(usuario_input, user_correto)
+                valida_senha = hmac.compare_digest(senha_input, senha_correta)
+
+                if valida_user and valida_senha:
+                    st.session_state["autenticado"] = True
+                    st.rerun()
+                else:
+                    st.error("Usuário ou senha incorretos.")
+
+    return False
+
+if not verificar_login():
+    st.stop()
+
+# --- BARRA SUPERIOR DE CABEÇALHO COM LOGOUT ---
+c_titulo, c_sair = st.columns([4, 1.2])
+with c_titulo:
+    st.title("🚗 Gestão Financeira")
+with c_sair:
+    st.markdown("<div style='height: 18px;'></div>", unsafe_allow_html=True)
+    if st.button("🚪 Sair", use_container_width=True):
+        st.session_state["autenticado"] = False
+        st.rerun()
 
 # Opções fixas
 OPCOES_RECEITA_FIXAS = ["Uber", "99", "Pedágio Uber", "Particular"]
@@ -133,15 +182,13 @@ def carregar_dados():
 
 init_db()
 
-st.title("🚗 Gestão Financeira")
-
 df_completo = carregar_dados()
 
 # Notificação temporária de sucesso
 if "msg_sucesso" in st.session_state:
     st.success(st.session_state.pop("msg_sucesso"))
 
-# Controle de estado para garantir que a data sempre inicie em HOJE e atualize com os botões
+# Estado da data
 if "data_novo_lancamento" not in st.session_state:
     st.session_state["data_novo_lancamento"] = date.today()
 
@@ -255,7 +302,6 @@ with tab_novo:
     with col_t2:
         cat_selecionada = st.selectbox("Categoria / Atividade", opcoes_cat, key="novo_cat_box")
 
-    # Seleção de data com atalhos funcionais que alteram o calendário imediatamente
     st.markdown("**Data do Lançamento:**")
     col_h, col_o, col_d = st.columns([1, 1, 2])
     
@@ -280,7 +326,6 @@ with tab_novo:
         )
         st.session_state["data_novo_lancamento"] = data_escolhida
 
-    # Identificação visual da data selecionada
     st.caption(f"🗓️ Data definida: **{st.session_state['data_novo_lancamento'].strftime('%d/%m/%Y')}**")
 
     with st.form("form_novo_lancamento", clear_on_submit=True):
@@ -307,7 +352,6 @@ with tab_novo:
                 tipo_bd = "Receita" if eh_receita else "Despesa"
                 data_para_gravar = st.session_state["data_novo_lancamento"]
                 inserir_registro(data_para_gravar, tipo_bd, cat_final, descricao_input.strip(), valor_num)
-                # Reseta para Hoje após salvar
                 st.session_state["data_novo_lancamento"] = date.today()
                 st.session_state["novo_date_key_ver"] += 1
                 st.session_state["msg_sucesso"] = "Lançamento salvo com sucesso!"
@@ -582,7 +626,6 @@ else:
             else:
                 st.caption("Sem despesas no período.")
 
-# Bloqueio rigoroso de teclado no campo do calendário
 components.html("""
 <script>
     function travarTecladoData() {
