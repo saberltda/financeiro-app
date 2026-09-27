@@ -21,20 +21,6 @@ st.markdown("""
     .stButton button {
         border-radius: 8px;
     }
-    .registro-card {
-        padding: 12px;
-        border-radius: 8px;
-        background-color: rgba(128, 128, 128, 0.08);
-        margin-bottom: 10px;
-        border-left: 4px solid #00CC96;
-    }
-    .registro-card-desp {
-        padding: 12px;
-        border-radius: 8px;
-        background-color: rgba(128, 128, 128, 0.08);
-        margin-bottom: 10px;
-        border-left: 4px solid #EF553B;
-    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -139,22 +125,49 @@ st.title("🚗 Gestão Financeira")
 
 df_completo = carregar_dados()
 
-# Feedback persistente de operações
-if "msg_sucesso" in st.session_state:
-    st.success(st.session_state.pop("msg_sucesso"))
+# Inicialização de estados
+if "aba_ativa" not in st.session_state:
+    st.session_state["aba_ativa"] = "➕ Novo Lançamento"
 
-# Inicialização de variáveis de controle da interface
 if "id_em_edicao" not in st.session_state:
     st.session_state["id_em_edicao"] = None
 
-if "id_em_exclusao" not in st.session_state:
-    st.session_state["id_em_exclusao"] = None
+# Mensagem persistente
+if "msg_sucesso" in st.session_state:
+    st.success(st.session_state.pop("msg_sucesso"))
 
-# Abas de Navegação Superior
-tab_novo, tab_gerenciar = st.tabs(["➕ Novo Lançamento", "⚙️ Gerenciar Registros"])
+# Diálogo nativo de confirmação de exclusão (evita reload indesejado da página)
+@st.dialog("Confirmar Exclusão")
+def modal_confirmar_exclusao(item_id, cat, val_str):
+    st.write(f"Deseja realmente excluir o lançamento **ID #{item_id}**?")
+    st.markdown(f"**{cat}** — **{val_str}**")
+    st.caption("Esta ação não poderá ser desfeita.")
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("✔️ Sim, excluir", type="primary", use_container_width=True):
+            deletar_registro(item_id)
+            if st.session_state["id_em_edicao"] == item_id:
+                st.session_state["id_em_edicao"] = None
+            st.session_state["aba_ativa"] = "⚙️ Gerenciar Registros"
+            st.session_state["msg_sucesso"] = f"Lançamento ID #{item_id} excluído com sucesso!"
+            st.rerun()
+    with col2:
+        if st.button("✖️ Cancelar", use_container_width=True):
+            st.rerun()
+
+# Navegação controlada por estado para não reiniciar na aba 1
+opcao_aba = st.radio(
+    "Navegação:",
+    ["➕ Novo Lançamento", "⚙️ Gerenciar Registros"],
+    index=0 if st.session_state["aba_ativa"] == "➕ Novo Lançamento" else 1,
+    horizontal=True,
+    label_visibility="collapsed"
+)
+st.session_state["aba_ativa"] = opcao_aba
 
 # --- ABA 1: NOVO LANÇAMENTO ---
-with tab_novo:
+if st.session_state["aba_ativa"] == "➕ Novo Lançamento":
     col_t1, col_t2 = st.columns(2)
     with col_t1:
         tipo_escolhido = st.radio("Tipo", ["Receita (Ganhos)", "Despesa (Custos)"], horizontal=True, key="novo_tipo")
@@ -192,33 +205,37 @@ with tab_novo:
             else:
                 tipo_bd = "Receita" if eh_receita else "Despesa"
                 inserir_registro(data_reg, tipo_bd, cat_final, descricao_input.strip(), valor_num)
+                st.session_state["aba_ativa"] = "➕ Novo Lançamento"
                 st.session_state["msg_sucesso"] = "Lançamento salvo com sucesso!"
                 st.rerun()
 
-# --- ABA 2: GERENCIAMENTO MODERNO E DIRETO ---
-with tab_gerenciar:
+# --- ABA 2: GERENCIAR REGISTROS (TIPO TRAVADO E SEM RESET) ---
+else:
     if df_completo.empty:
         st.info("Nenhum lançamento registrado até o momento.")
     else:
-        # Se algum item estiver selecionado para edição, exibe o painel de edição no topo
+        # Bloco de Edição com Tipo Travado
         if st.session_state["id_em_edicao"] is not None:
             id_edit = st.session_state["id_em_edicao"]
             item_query = df_completo[df_completo["id"] == id_edit]
             
             if not item_query.empty:
                 item_edit = item_query.iloc[0]
-                st.info(f"✏️ **Editando Lançamento ID #{id_edit}**")
+                tipo_bloqueado = item_edit["tipo"]
+                badge_cor = "🟢" if tipo_bloqueado == "Receita" else "🔴"
+
+                st.markdown(f"### ✏️ Editando Lançamento ID #{id_edit}")
+                st.info(f"**Tipo fixo:** {badge_cor} **{tipo_bloqueado}** *(não é permitido alterar uma {tipo_bloqueado.lower()} para outro tipo)*")
                 
                 with st.form(f"form_edicao_{id_edit}"):
-                    c1, c2, c3 = st.columns(3)
+                    c1, c2 = st.columns(2)
                     with c1:
-                        tipo_ed = st.radio("Tipo:", ["Receita", "Despesa"], index=0 if item_edit["tipo"] == "Receita" else 1, horizontal=True)
+                        data_ed = st.date_input("Data do Registro:", value=item_edit["data"].date())
                     with c2:
-                        data_ed = st.date_input("Data:", value=item_edit["data"].date())
-                    with c3:
                         valor_ed_str = st.text_input("Valor (R$):", value=f"{float(item_edit['valor']):.2f}".replace(".", ","))
 
-                    opcoes_lista = OPCOES_RECEITA_FORM if tipo_ed == "Receita" else OPCOES_DESPESA_FORM
+                    # Garante que apenas opções do mesmo tipo apareçam
+                    opcoes_lista = OPCOES_RECEITA_FORM if tipo_bloqueado == "Receita" else OPCOES_DESPESA_FORM
                     cat_atual = item_edit["categoria"]
 
                     if cat_atual in opcoes_lista and cat_atual != "Outro":
@@ -230,7 +247,7 @@ with tab_gerenciar:
 
                     c_cat1, c_cat2 = st.columns(2)
                     with c_cat1:
-                        cat_sel_ed = st.selectbox("Categoria:", opcoes_lista, index=idx_cat)
+                        cat_sel_ed = st.selectbox(f"Categoria de {tipo_bloqueado}:", opcoes_lista, index=idx_cat)
                     with c_cat2:
                         if cat_sel_ed == "Outro":
                             cat_final_ed = st.text_input("Especifique a categoria *", value=custom_txt).strip()
@@ -252,21 +269,22 @@ with tab_gerenciar:
                         elif cat_sel_ed == "Outro" and not cat_final_ed:
                             st.error("Indique a descrição da categoria 'Outro'.")
                         else:
-                            atualizar_registro(id_edit, data_ed, tipo_ed, cat_final_ed, desc_ed, v_num)
+                            atualizar_registro(id_edit, data_ed, tipo_bloqueado, cat_final_ed, desc_ed, v_num)
                             st.session_state["id_em_edicao"] = None
+                            st.session_state["aba_ativa"] = "⚙️ Gerenciar Registros"
                             st.session_state["msg_sucesso"] = f"Lançamento ID #{id_edit} atualizado com sucesso!"
                             st.rerun()
 
                     if btn_cancelar_ed:
                         st.session_state["id_em_edicao"] = None
+                        st.session_state["aba_ativa"] = "⚙️ Gerenciar Registros"
                         st.rerun()
+
                 st.markdown("---")
 
-        # Lista rápida de busca e gestão de lançamentos
-        st.markdown("#### 📋 Todos os Lançamentos Registrados")
-        
-        # Filtro de pesquisa rápida em texto
-        busca = st.text_input("🔍 Pesquisar por categoria ou observação:", placeholder="Digite para filtrar...").lower().strip()
+        # Lista de lançamentos com ação direta
+        st.markdown("#### 📋 Todos os Lançamentos")
+        busca = st.text_input("🔍 Pesquisar lançamento:", placeholder="Filtre por categoria ou observação...").lower().strip()
         
         df_lista = df_completo.copy()
         if busca:
@@ -275,46 +293,28 @@ with tab_gerenciar:
                 df_lista["descricao"].str.lower().str.contains(busca, na=False)
             ]
 
-        # Exibição de cards individuais com botões de ação direta
-        for _, row in df_lista.head(50).iterrows():
+        for _, row in df_lista.head(60).iterrows():
             item_id = int(row["id"])
-            data_formatada = row["data"].strftime("%d/%m/%Y")
-            valor_formatado = formata_real(row["valor"])
+            data_str = row["data"].strftime("%d/%m/%Y")
+            val_formatado = formata_real(row["valor"])
             tipo_icon = "🟢" if row["tipo"] == "Receita" else "🔴"
             obs = f" - *{row['descricao']}*" if row["descricao"] else ""
 
             col_info, col_btn_edit, col_btn_del = st.columns([5, 1.2, 1.2])
 
             with col_info:
-                st.markdown(f"{tipo_icon} **{data_formatada}** | **{row['categoria']}** | **{valor_formatado}**{obs} `(ID: {item_id})`")
+                st.markdown(f"{tipo_icon} **{data_str}** | **{row['categoria']}** | **{val_formatado}**{obs} `(ID: {item_id})`")
 
             with col_btn_edit:
-                if st.button("✏️ Editar", key=f"btn_card_edit_{item_id}", use_container_width=True):
+                if st.button("✏️ Editar", key=f"btn_edit_{item_id}", use_container_width=True):
                     st.session_state["id_em_edicao"] = item_id
-                    st.session_state["id_em_exclusao"] = None
+                    st.session_state["aba_ativa"] = "⚙️ Gerenciar Registros"
                     st.rerun()
 
             with col_btn_del:
-                if st.button("🗑️ Excluir", key=f"btn_card_del_{item_id}", use_container_width=True):
-                    st.session_state["id_em_exclusao"] = item_id
-                    st.rerun()
-
-            # Caixa de confirmação inline de exclusão
-            if st.session_state["id_em_exclusao"] == item_id:
-                st.warning(f"Confirma a exclusão definitiva do lançamento ID #{item_id} ({valor_formatado})?")
-                col_c1, col_c2 = st.columns(2)
-                with col_c1:
-                    if st.button("✔️ Sim, excluir agora", key=f"btn_conf_del_{item_id}", type="secondary", use_container_width=True):
-                        deletar_registro(item_id)
-                        st.session_state["id_em_exclusao"] = None
-                        if st.session_state["id_em_edicao"] == item_id:
-                            st.session_state["id_em_edicao"] = None
-                        st.session_state["msg_sucesso"] = f"Lançamento ID #{item_id} excluído com sucesso!"
-                        st.rerun()
-                with col_c2:
-                    if st.button("✖️ Não excluir", key=f"btn_canc_del_{item_id}", use_container_width=True):
-                        st.session_state["id_em_exclusao"] = None
-                        st.rerun()
+                if st.button("🗑️ Excluir", key=f"btn_del_{item_id}", use_container_width=True):
+                    st.session_state["aba_ativa"] = "⚙️ Gerenciar Registros"
+                    modal_confirmar_exclusao(item_id, row["categoria"], val_formatado)
 
 st.markdown("---")
 
@@ -454,7 +454,6 @@ else:
 
             st.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
 
-            # Formatações com vírgula em 100% da visualização da tabela
             df_tabela["data_formatada"] = df_tabela["data"].dt.strftime("%d/%m/%Y")
             df_tabela["valor_formatado"] = df_tabela["valor"].apply(lambda v: f"R$ {v:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
             
