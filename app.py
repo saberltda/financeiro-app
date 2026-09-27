@@ -11,7 +11,7 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# Estilização visual moderna e compacta para celular
+# Estilização visual moderna e compacta para telemóvel
 st.markdown("""
 <style>
     div[data-testid="stMetricValue"] > div {
@@ -34,6 +34,23 @@ OPCOES_DESPESA_FORM = OPCOES_DESPESA_FIXAS + ["Outro"]
 # Função auxiliar para formatação em Real sem quebrar Markdown/LaTeX
 def formata_real(valor):
     return f"R$ {valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+# Função para converter qualquer entrada de texto de valor (com ponto ou vírgula) em float válido
+def converter_valor(texto):
+    if not texto:
+        return 0.0
+    texto_limpo = texto.strip().replace("R$", "").replace("r$", "").strip()
+    if not texto_limpo:
+        return 0.0
+    if "," in texto_limpo and "." in texto_limpo:
+        texto_limpo = texto_limpo.replace(".", "").replace(",", ".")
+    elif "," in texto_limpo:
+        texto_limpo = texto_limpo.replace(",", ".")
+    try:
+        val = float(texto_limpo)
+        return val if val >= 0 else 0.0
+    except ValueError:
+        return -1.0
 
 # Conexão com o Supabase via Secrets do Streamlit Cloud
 raw_url = st.secrets["database"]["url"]
@@ -109,14 +126,14 @@ st.title("🚗 Gestão Financeira")
 
 df_completo = carregar_dados()
 
-# Mensagem temporária após salvar
+# Mensagem temporária após guardar
 if st.session_state.get("msg_sucesso"):
     st.success(st.session_state.pop("msg_sucesso"))
 
-# Abas de Ação
+# Separadores de Ação
 tab_novo, tab_editar = st.tabs(["➕ Novo Lançamento", "✏️ Editar / Excluir"])
 
-# --- ABA NOVO LANÇAMENTO ---
+# --- SEPARADOR NOVO LANÇAMENTO ---
 with tab_novo:
     col_t1, col_t2 = st.columns(2)
     with col_t1:
@@ -133,11 +150,11 @@ with tab_novo:
         with col_f1:
             data_reg = st.date_input("Data", value=date.today())
         with col_f2:
-            valor_input = st.number_input("Valor (R$)", min_value=0.00, value=0.00, step=5.0, format="%.2f")
+            valor_raw = st.text_input("Valor (R$)", placeholder="Ex: 5,00 ou 150")
 
         cat_final = cat_selecionada
         if cat_selecionada == "Outro":
-            cat_especificada = st.text_input("Especifique a categoria *", placeholder="Ex: Corrida fora do app, Entrega, Troca de óleo...")
+            cat_especificada = st.text_input("Especifique a categoria *", placeholder="Ex: Corrida fora da app, Entrega, Troca de óleo...")
             cat_final = cat_especificada.strip()
 
         descricao_input = st.text_input("Observação (Opcional)", placeholder="Ex: Posto Ipiranga, corrida longa...")
@@ -145,31 +162,34 @@ with tab_novo:
         btn_salvar = st.form_submit_button("💾 Salvar Registro", use_container_width=True, type="primary")
 
         if btn_salvar:
-            if valor_input <= 0:
-                st.error("O valor informado deve ser maior que R$ 0,00.")
+            valor_num = converter_valor(valor_raw)
+            if valor_num < 0:
+                st.error("Por favor, digite um valor numérico válido (ex: 5 ou 5,50).")
+            elif valor_num <= 0:
+                st.error("O valor informado deve ser superior a R$ 0,00.")
             elif cat_selecionada == "Outro" and not cat_final:
-                st.error("Por favor, digite qual é a categoria em 'Outro'.")
+                st.error("Por favor, indique a categoria em 'Outro'.")
             else:
                 tipo_bd = "Receita" if eh_receita else "Despesa"
-                inserir_registro(data_reg, tipo_bd, cat_final, descricao_input.strip(), valor_input)
-                st.session_state["msg_sucesso"] = "Lançamento salvo com sucesso!"
+                inserir_registro(data_reg, tipo_bd, cat_final, descricao_input.strip(), valor_num)
+                st.session_state["msg_sucesso"] = "Lançamento guardado com sucesso!"
                 st.rerun()
 
-# --- ABA EDITAR / EXCLUIR ---
+# --- SEPARADOR EDITAR / EXCLUIR ---
 with tab_editar:
     if df_completo.empty:
-        st.info("Nenhum lançamento registrado até o momento.")
+        st.info("Nenhum lançamento registado até ao momento.")
     else:
         df_completo["label"] = df_completo.apply(
             lambda r: f"ID #{r['id']} | {r['data'].strftime('%d/%m/%Y')} | {r['tipo']} | {r['categoria']} | {formata_real(r['valor'])}",
             axis=1
         )
-        opcao_id = st.selectbox("Selecione o registro para modificar:", df_completo["label"].tolist())
+        opcao_id = st.selectbox("Selecione o registo para modificar:", df_completo["label"].tolist())
         id_selecionado = int(opcao_id.split("#")[1].split(" ")[0])
         item = df_completo[df_completo["id"] == id_selecionado].iloc[0]
 
         edit_tipo = st.radio("Tipo:", ["Receita", "Despesa"], index=0 if item["tipo"] == "Receita" else 1, horizontal=True)
-        edit_data = st.date_input("Data do Registro", value=item["data"].date(), key="edit_data_input")
+        edit_data = st.date_input("Data do Registo", value=item["data"].date(), key="edit_data_input")
 
         opcoes_edit = OPCOES_RECEITA_FORM if edit_tipo == "Receita" else OPCOES_DESPESA_FORM
         cat_atual = item["categoria"]
@@ -185,7 +205,7 @@ with tab_editar:
         with col_e1:
             edit_cat_sel = st.selectbox("Categoria", opcoes_edit, index=idx_cat, key="edit_cat_box")
         with col_e2:
-            edit_valor = st.number_input("Valor (R$)", min_value=0.01, step=10.0, format="%.2f", value=float(item["valor"]))
+            edit_valor_raw = st.text_input("Valor (R$)", value=f"{float(item['valor']):.2f}".replace(".", ","), key="edit_valor_box")
 
         if edit_cat_sel == "Outro":
             edit_cat_final = st.text_input("Especifique a categoria *", value=custom_val, key="edit_outro_input")
@@ -197,11 +217,16 @@ with tab_editar:
         col_btn1, col_btn2 = st.columns(2)
         with col_btn1:
             if st.button("💾 Atualizar", use_container_width=True, type="primary"):
-                if edit_cat_sel == "Outro" and not edit_cat_final.strip():
-                    st.error("Informe a descrição de 'Outro'.")
+                edit_valor_num = converter_valor(edit_valor_raw)
+                if edit_valor_num < 0:
+                    st.error("Por favor, digite um valor numérico válido.")
+                elif edit_valor_num <= 0:
+                    st.error("O valor informado deve ser superior a R$ 0,00.")
+                elif edit_cat_sel == "Outro" and not edit_cat_final.strip():
+                    st.error("Indique a descrição de 'Outro'.")
                 else:
-                    atualizar_registro(id_selecionado, edit_data, edit_tipo, edit_cat_final.strip(), edit_desc.strip(), edit_valor)
-                    st.session_state["msg_sucesso"] = "Registro atualizado com sucesso!"
+                    atualizar_registro(id_selecionado, edit_data, edit_tipo, edit_cat_final.strip(), edit_desc.strip(), edit_valor_num)
+                    st.session_state["msg_sucesso"] = "Registo atualizado com sucesso!"
                     st.rerun()
 
         with col_btn2:
