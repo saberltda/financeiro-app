@@ -11,7 +11,7 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# Estilização visual moderna e compacta para telemóvel
+# Estilização visual moderna e compacta para celular
 st.markdown("""
 <style>
     div[data-testid="stMetricValue"] > div {
@@ -31,7 +31,7 @@ OPCOES_DESPESA_FIXAS = ["Combustível", "Lavagem", "SemParar do dia"]
 OPCOES_RECEITA_FORM = OPCOES_RECEITA_FIXAS + ["Outro"]
 OPCOES_DESPESA_FORM = OPCOES_DESPESA_FIXAS + ["Outro"]
 
-# Função auxiliar para formatação em Real sem quebrar Markdown/LaTeX
+# Função auxiliar para formatação em Real
 def formata_real(valor):
     return f"R$ {valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
@@ -39,7 +39,7 @@ def formata_real(valor):
 def converter_valor(texto):
     if not texto:
         return 0.0
-    texto_limpo = texto.strip().replace("R$", "").replace("r$", "").strip()
+    texto_limpo = str(texto).strip().replace("R$", "").replace("r$", "").strip()
     if not texto_limpo:
         return 0.0
     if "," in texto_limpo and "." in texto_limpo:
@@ -84,7 +84,7 @@ def init_db():
                 );
             '''))
     except Exception as e:
-        st.error(f"Detalhe real do erro de conexão: {str(e)}")
+        st.error(f"Erro de conexão com o banco de dados: {str(e)}")
         st.stop()
 
 def inserir_registro(data_reg, tipo, categoria, descricao, valor):
@@ -126,14 +126,14 @@ st.title("🚗 Gestão Financeira")
 
 df_completo = carregar_dados()
 
-# Mensagem temporária após guardar
-if st.session_state.get("msg_sucesso"):
+# Mensagens de alerta persistentes
+if "msg_sucesso" in st.session_state:
     st.success(st.session_state.pop("msg_sucesso"))
 
-# Separadores de Ação
-tab_novo, tab_editar = st.tabs(["➕ Novo Lançamento", "✏️ Editar / Excluir"])
+# Separadores principais
+tab_novo, tab_editar = st.tabs(["➕ Novo Lançamento", "✏️ Gerenciar Registros"])
 
-# --- SEPARADOR NOVO LANÇAMENTO ---
+# --- ABA 1: NOVO LANÇAMENTO ---
 with tab_novo:
     col_t1, col_t2 = st.columns(2)
     with col_t1:
@@ -154,7 +154,7 @@ with tab_novo:
 
         cat_final = cat_selecionada
         if cat_selecionada == "Outro":
-            cat_especificada = st.text_input("Especifique a categoria *", placeholder="Ex: Corrida fora da app, Entrega, Troca de óleo...")
+            cat_especificada = st.text_input("Especifique a categoria *", placeholder="Ex: Corrida fora do app, Troca de óleo...")
             cat_final = cat_especificada.strip()
 
         descricao_input = st.text_input("Observação (Opcional)", placeholder="Ex: Posto Ipiranga, corrida longa...")
@@ -172,80 +172,92 @@ with tab_novo:
             else:
                 tipo_bd = "Receita" if eh_receita else "Despesa"
                 inserir_registro(data_reg, tipo_bd, cat_final, descricao_input.strip(), valor_num)
-                st.session_state["msg_sucesso"] = "Lançamento guardado com sucesso!"
+                st.session_state["msg_sucesso"] = "Lançamento salvo com sucesso!"
                 st.rerun()
 
-# --- SEPARADOR EDITAR / EXCLUIR ---
+# --- ABA 2: GERENCIAR REGISTROS (EDIÇÃO E EXCLUSÃO SIMPLIFICADA) ---
 with tab_editar:
     if df_completo.empty:
-        st.info("Nenhum lançamento registado até ao momento.")
+        st.info("Nenhum lançamento registrado no banco de dados.")
     else:
-        df_completo["label"] = df_completo.apply(
+        # Criação de lista limpa e legível para seleção
+        df_edit = df_completo.copy()
+        df_edit["rotulo"] = df_edit.apply(
             lambda r: f"ID #{r['id']} | {r['data'].strftime('%d/%m/%Y')} | {r['tipo']} | {r['categoria']} | {formata_real(r['valor'])}",
             axis=1
         )
-        opcao_id = st.selectbox("Selecione o registo para modificar:", df_completo["label"].tolist())
-        id_selecionado = int(opcao_id.split("#")[1].split(" ")[0])
-        item = df_completo[df_completo["id"] == id_selecionado].iloc[0]
+        
+        col_sel1, col_sel2 = st.columns([3, 1])
+        with col_sel1:
+            item_selecionado_rotulo = st.selectbox(
+                "Selecione um lançamento para editar ou excluir:",
+                options=df_edit["rotulo"].tolist(),
+                index=0,
+                key="gerenciar_select_id"
+            )
+        
+        id_atual = int(item_selecionado_rotulo.split("#")[1].split(" ")[0])
+        item_atual = df_edit[df_edit["id"] == id_atual].iloc[0]
 
-        edit_tipo = st.radio("Tipo:", ["Receita", "Despesa"], index=0 if item["tipo"] == "Receita" else 1, horizontal=True)
-        edit_data = st.date_input("Data do Registo", value=item["data"].date(), key="edit_data_input")
+        # Container visual destacado para a ação
+        with st.container():
+            st.markdown(f"#### 📝 Alterando Lançamento **ID #{id_atual}**")
+            
+            c_ed1, c_ed2, c_ed3 = st.columns([1, 1, 1])
+            with c_ed1:
+                tipo_ed = st.radio("Tipo:", ["Receita", "Despesa"], index=0 if item_atual["tipo"] == "Receita" else 1, horizontal=True)
+            with c_ed2:
+                data_ed = st.date_input("Data do Registro:", value=item_atual["data"].date(), key=f"d_ed_{id_atual}")
+            with c_ed3:
+                valor_ed_str = st.text_input("Valor (R$):", value=f"{float(item_atual['valor']):.2f}".replace(".", ","), key=f"v_ed_{id_atual}")
 
-        opcoes_edit = OPCOES_RECEITA_FORM if edit_tipo == "Receita" else OPCOES_DESPESA_FORM
-        cat_atual = item["categoria"]
+            # Seleção de categorias
+            opcoes_ed_lista = OPCOES_RECEITA_FORM if tipo_ed == "Receita" else OPCOES_DESPESA_FORM
+            cat_atual_bd = item_atual["categoria"]
+            
+            if cat_atual_bd in opcoes_ed_lista and cat_atual_bd != "Outro":
+                idx_cat_ed = opcoes_ed_lista.index(cat_atual_bd)
+                custom_cat_val = ""
+            else:
+                idx_cat_ed = opcoes_ed_lista.index("Outro")
+                custom_cat_val = cat_atual_bd
 
-        if cat_atual in opcoes_edit and cat_atual != "Outro":
-            idx_cat = opcoes_edit.index(cat_atual)
-            custom_val = ""
-        else:
-            idx_cat = opcoes_edit.index("Outro")
-            custom_val = cat_atual
-
-        col_e1, col_e2 = st.columns(2)
-        with col_e1:
-            edit_cat_sel = st.selectbox("Categoria", opcoes_edit, index=idx_cat, key="edit_cat_box")
-        with col_e2:
-            edit_valor_raw = st.text_input("Valor (R$)", value=f"{float(item['valor']):.2f}".replace(".", ","), key="edit_valor_box")
-
-        if edit_cat_sel == "Outro":
-            edit_cat_final = st.text_input("Especifique a categoria *", value=custom_val, key="edit_outro_input")
-        else:
-            edit_cat_final = edit_cat_sel
-
-        edit_desc = st.text_input("Observação", value=item["descricao"] if item["descricao"] else "", key="edit_desc_input")
-
-        col_btn1, col_btn2 = st.columns(2)
-        with col_btn1:
-            if st.button("💾 Atualizar", use_container_width=True, type="primary"):
-                edit_valor_num = converter_valor(edit_valor_raw)
-                if edit_valor_num < 0:
-                    st.error("Por favor, digite um valor numérico válido.")
-                elif edit_valor_num <= 0:
-                    st.error("O valor informado deve ser superior a R$ 0,00.")
-                elif edit_cat_sel == "Outro" and not edit_cat_final.strip():
-                    st.error("Indique a descrição de 'Outro'.")
+            col_cat1, col_cat2 = st.columns(2)
+            with col_cat1:
+                cat_ed_sel = st.selectbox("Categoria:", opcoes_ed_lista, index=idx_cat_ed, key=f"c_ed_{id_atual}")
+            with col_cat2:
+                if cat_ed_sel == "Outro":
+                    cat_ed_final = st.text_input("Especifique a categoria *", value=custom_cat_val, key=f"out_{id_atual}").strip()
                 else:
-                    atualizar_registro(id_selecionado, edit_data, edit_tipo, edit_cat_final.strip(), edit_desc.strip(), edit_valor_num)
-                    st.session_state["msg_sucesso"] = "Registo atualizado com sucesso!"
-                    st.rerun()
+                    cat_ed_final = cat_ed_sel
 
-        with col_btn2:
-            if st.button("🗑️ Excluir", use_container_width=True):
-                st.session_state["confirmando_exclusao_id"] = id_selecionado
+            desc_ed = st.text_input("Observação:", value=item_atual["descricao"] if item_atual["descricao"] else "", key=f"obs_{id_atual}").strip()
 
-        if st.session_state.get("confirmando_exclusao_id") == id_selecionado:
-            st.error(f"⚠️ Deseja realmente excluir o lançamento **ID #{id_selecionado} ({item['categoria']} - {formata_real(item['valor'])})**?")
-            col_c1, col_c2 = st.columns(2)
-            with col_c1:
-                if st.button("✔️ Sim, excluir definitivamente", use_container_width=True, type="secondary"):
-                    deletar_registro(id_selecionado)
-                    st.session_state.pop("confirmando_exclusao_id", None)
-                    st.session_state["msg_sucesso"] = "Lançamento excluído com sucesso!"
-                    st.rerun()
-            with col_c2:
-                if st.button("✖️ Cancelar", use_container_width=True):
-                    st.session_state.pop("confirmando_exclusao_id", None)
-                    st.rerun()
+            st.write("")
+            col_botoes1, col_botoes2 = st.columns([1, 1])
+
+            # Botão de Atualizar
+            with col_botoes1:
+                if st.button("💾 Salvar Alterações", use_container_width=True, type="primary", key=f"btn_salv_{id_atual}"):
+                    val_atualizado = converter_valor(valor_ed_str)
+                    if val_atualizado <= 0:
+                        st.error("O valor informado deve ser superior a R$ 0,00.")
+                    elif cat_ed_sel == "Outro" and not cat_ed_final:
+                        st.error("Informe a descrição de 'Outro'.")
+                    else:
+                        atualizar_registro(id_atual, data_ed, tipo_ed, cat_ed_final, desc_ed, val_atualizado)
+                        st.session_state["msg_sucesso"] = f"Lançamento ID #{id_atual} atualizado com sucesso!"
+                        st.rerun()
+
+            # Área de Exclusão Direta e Clara
+            with col_botoes2:
+                with st.expander("🗑️ Opção de Excluir Registro"):
+                    st.warning(f"Atenção: A exclusão do lançamento **ID #{id_atual} ({formata_real(item_atual['valor'])})** é irreversível.")
+                    confirmar_check = st.checkbox("Confirmar exclusão definitiva", key=f"chk_del_{id_atual}")
+                    if st.button("Confirmo e Quero Excluir", use_container_width=True, disabled=not confirmar_check, key=f"btn_del_{id_atual}"):
+                        deletar_registro(id_atual)
+                        st.session_state["msg_sucesso"] = f"Lançamento ID #{id_atual} excluído com sucesso!"
+                        st.rerun()
 
 st.markdown("---")
 
@@ -383,6 +395,7 @@ else:
                     txt_saidas = formata_real(total_saidas_filtro).replace("$", "\\$")
                     st.markdown(f"🟢 Entradas: **{txt_entradas}** | 🔴 Saídas: **{txt_saidas}**")
 
+            # Espaçamento para evitar que botões flutuantes da tabela sobreponham o texto
             st.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
 
             df_tabela["data_formatada"] = df_tabela["data"].dt.strftime("%d/%m/%Y")
