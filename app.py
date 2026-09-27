@@ -35,7 +35,7 @@ OPCOES_DESPESA_FORM = OPCOES_DESPESA_FIXAS + ["Outro"]
 def formata_real(valor):
     return f"R$ {valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
-# Conexão blindada com o Supabase via Secrets do Streamlit Cloud
+# Conexão com o Supabase via Secrets do Streamlit Cloud
 raw_url = st.secrets["database"]["url"]
 
 # Ajuste automático do driver psycopg e sslmode
@@ -54,17 +54,21 @@ engine = create_engine(
 )
 
 def init_db():
-    with engine.begin() as conn:
-        conn.execute(text('''
-            CREATE TABLE IF NOT EXISTS lancamentos (
-                id SERIAL PRIMARY KEY,
-                data DATE NOT NULL,
-                tipo TEXT NOT NULL,
-                categoria TEXT NOT NULL,
-                descricao TEXT,
-                valor NUMERIC(10, 2) NOT NULL
-            );
-        '''))
+    try:
+        with engine.begin() as conn:
+            conn.execute(text('''
+                CREATE TABLE IF NOT EXISTS lancamentos (
+                    id SERIAL PRIMARY KEY,
+                    data DATE NOT NULL,
+                    tipo TEXT NOT NULL,
+                    categoria TEXT NOT NULL,
+                    descricao TEXT,
+                    valor NUMERIC(10, 2) NOT NULL
+                );
+            '''))
+    except Exception as e:
+        st.error(f"Detalhe real do erro de conexão: {str(e)}")
+        st.stop()
 
 def inserir_registro(data_reg, tipo, categoria, descricao, valor):
     with engine.begin() as conn:
@@ -354,7 +358,6 @@ else:
                     txt_saidas = formata_real(total_saidas_filtro).replace("$", "\\$")
                     st.markdown(f"🟢 Entradas: **{txt_entradas}** | 🔴 Saídas: **{txt_saidas}**")
 
-            # Espaçamento para evitar sobreposição dos botões flutuantes da tabela
             st.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
 
             df_tabela["data_formatada"] = df_tabela["data"].dt.strftime("%d/%m/%Y")
