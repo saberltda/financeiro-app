@@ -11,7 +11,7 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# Estilização visual moderna e compacta para celular
+# Estilização visual e bloqueio do teclado no calendário móvel
 st.markdown("""
 <style>
     div[data-testid="stMetricValue"] > div {
@@ -21,10 +21,42 @@ st.markdown("""
     .stButton button {
         border-radius: 8px;
     }
-    .stSelectbox label {
-        display: none;
+    
+    /* BLOQUEIO DO TECLADO NO CALENDÁRIO */
+    /* Impede o input de texto do date_input de receber foco de digitação */
+    div[data-testid="stDateInput"] input {
+        pointer-events: none !important;
+        caret-color: transparent !important;
+        user-select: none !important;
+        -webkit-user-select: none !important;
+    }
+    
+    /* Mantém o contêiner clicável para acionar a janela suspensa do calendário */
+    div[data-testid="stDateInput"] > div {
+        cursor: pointer !important;
     }
 </style>
+
+<script>
+    // Remove o foco ativo caso o navegador móvel tente forçar o teclado
+    function desativarTecladoData() {
+        const doc = window.parent.document;
+        const dateInputs = doc.querySelectorAll('div[data-testid="stDateInput"] input');
+        dateInputs.forEach(input => {
+            input.setAttribute('readonly', 'true');
+            input.setAttribute('inputmode', 'none');
+            input.addEventListener('focus', function(e) {
+                e.preventDefault();
+                input.blur();
+            });
+        });
+    }
+    
+    // Executa continuamente via MutationObserver para cobrir abas e modais dinâmicos
+    desativarTecladoData();
+    const observer = new MutationObserver(desativarTecladoData);
+    observer.observe(window.parent.document.body, { childList: true, subtree: true });
+</script>
 """, unsafe_allow_html=True)
 
 # Opções fixas
@@ -33,12 +65,6 @@ OPCOES_DESPESA_FIXAS = ["Combustível", "Lavagem", "SemParar do dia"]
 
 OPCOES_RECEITA_FORM = OPCOES_RECEITA_FIXAS + ["Outro"]
 OPCOES_DESPESA_FORM = OPCOES_DESPESA_FIXAS + ["Outro"]
-
-MESES_NOME = [
-    "01 - Janeiro", "02 - Fevereiro", "03 - Março", "04 - Abril", 
-    "05 - Maio", "06 - Junho", "07 - Julho", "08 - Agosto", 
-    "09 - Setembro", "10 - Outubro", "11 - Novembro", "12 - Dezembro"
-]
 
 # Função auxiliar para formatação em Real brasileiro (R$ 1.250,50)
 def formata_real(valor):
@@ -60,44 +86,6 @@ def converter_valor(texto):
         return val if val >= 0 else 0.0
     except ValueError:
         return -1.0
-
-# Seletor de data sem teclado (utiliza 3 menus suspensos)
-def seletor_data_touch(chave_prefixo, data_padrao=None):
-    if data_padrao is None:
-        data_padrao = date.today()
-    
-    col_d, col_m, col_a = st.columns([1, 1.6, 1.2])
-    
-    with col_d:
-        dia_sel = st.selectbox(
-            "Dia", 
-            options=list(range(1, 32)), 
-            index=data_padrao.day - 1, 
-            key=f"{chave_prefixo}_dia"
-        )
-    with col_m:
-        mes_sel_idx = data_padrao.month - 1
-        mes_escolhido = st.selectbox(
-            "Mês", 
-            options=MESES_NOME, 
-            index=mes_sel_idx, 
-            key=f"{chave_prefixo}_mes"
-        )
-        mes_sel = int(mes_escolhido.split(" - ")[0])
-    with col_a:
-        anos = [data_padrao.year - 1, data_padrao.year, data_padrao.year + 1]
-        ano_sel = st.selectbox(
-            "Ano", 
-            options=anos, 
-            index=anos.index(data_padrao.year), 
-            key=f"{chave_prefixo}_ano"
-        )
-    
-    try:
-        return date(ano_sel, mes_sel, dia_sel)
-    except ValueError:
-        # Corrige caso selecione dia inexistente (ex: 31 de fevereiro)
-        return date(ano_sel, mes_sel, 28)
 
 # Conexão blindada com o Supabase via Secrets do Streamlit Cloud
 raw_url = st.secrets["database"]["url"]
@@ -176,17 +164,18 @@ df_completo = carregar_dados()
 if "msg_sucesso" in st.session_state:
     st.success(st.session_state.pop("msg_sucesso"))
 
-# Modal de Edição (com seleção por toque)
+# Modal de Edição (Usa calendário com bloqueio de foco)
 @st.dialog("✏️ Editar Lançamento")
 def modal_editar_registro(item_id, item_data, item_tipo, item_cat, item_desc, item_val):
     badge = "🟢" if item_tipo == "Receita" else "🔴"
     st.markdown(f"**Tipo:** {badge} **{item_tipo}**")
     
-    st.caption("Data do Lançamento (Dia / Mês / Ano):")
-    nova_data = seletor_data_touch("edicao_modal", item_data)
-
     with st.form("form_dialog_edicao"):
-        novo_val_str = st.text_input("Valor (R$):", value=f"{float(item_val):.2f}".replace(".", ","))
+        c1, c2 = st.columns(2)
+        with c1:
+            nova_data = st.date_input("Data:", value=item_data)
+        with c2:
+            novo_val_str = st.text_input("Valor (R$):", value=f"{float(item_val):.2f}".replace(".", ","))
 
         opcoes_lista = OPCOES_RECEITA_FORM if item_tipo == "Receita" else OPCOES_DESPESA_FORM
         
@@ -252,11 +241,12 @@ with tab_novo:
     with col_t2:
         cat_selecionada = st.selectbox("Categoria / Atividade", opcoes_cat, key="novo_cat_box")
 
-    st.caption("Data (Dia / Mês / Ano):")
-    data_reg = seletor_data_touch("novo_registro", date.today())
-
     with st.form("form_novo_lancamento", clear_on_submit=True):
-        valor_raw = st.text_input("Valor (R$)", placeholder="Ex: 5,00 ou 150,00")
+        col_f1, col_f2 = st.columns(2)
+        with col_f1:
+            data_reg = st.date_input("Data:", value=date.today())
+        with col_f2:
+            valor_raw = st.text_input("Valor (R$)", placeholder="Ex: 5,00 ou 150,00")
 
         cat_final = cat_selecionada
         if cat_selecionada == "Outro":
@@ -352,11 +342,14 @@ else:
     elif periodo_selecionado == "Tudo":
         d_inicio = df["data"].min().date()
         d_fim = df["data"].max().date()
-    else: # Personalizado com seletores de toque
-        st.caption("Data Inicial:")
-        d_inicio = seletor_data_touch("filtro_inicio", df["data"].min().date())
-        st.caption("Data Final:")
-        d_fim = seletor_data_touch("filtro_fim", df["data"].max().date())
+    else: # Personalizado com intervalo nativo
+        min_base = df["data"].min().date()
+        max_base = df["data"].max().date()
+        intervalo = st.date_input("Escolha as datas:", value=(min_base, max_base))
+        if isinstance(intervalo, (list, tuple)) and len(intervalo) == 2:
+            d_inicio, d_fim = intervalo
+        else:
+            d_inicio, d_fim = min_base, max_base
 
     df_f = df[(df["data"].dt.date >= d_inicio) & (df["data"].dt.date <= d_fim)].copy()
 
@@ -383,7 +376,7 @@ else:
 
         st.caption(f"📅 **{dias_trabalhados}** dia(s) trabalhado(s) | Média líquida: **{formata_real(media_lucro_dia)} / dia**")
 
-        # --- SEÇÃO DA TABELA ---
+        # --- SEÇÃO DA TABELA (COM VÍRGULA NAS CASAS DECIMAIS) ---
         st.markdown("---")
         st.markdown("#### 📋 Lançamentos do Período")
 
