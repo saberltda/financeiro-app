@@ -3,6 +3,7 @@ import pandas as pd
 from datetime import date, timedelta
 import plotly.express as px
 from sqlalchemy import create_engine, text
+import streamlit.components.v1 as components
 
 st.set_page_config(
     page_title="Controle Motorista App", 
@@ -11,7 +12,7 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# Estilização visual moderna e compacta para celular
+# Estilização visual moderna e desativação do teclado no calendário
 st.markdown("""
 <style>
     div[data-testid="stMetricValue"] > div {
@@ -21,8 +22,38 @@ st.markdown("""
     .stButton button {
         border-radius: 8px;
     }
+    .card-registro {
+        padding: 10px 14px;
+        border-radius: 8px;
+        background-color: rgba(128, 128, 128, 0.07);
+        margin-bottom: 8px;
+    }
+    /* Impede cursor de texto e foco de digitação no campo de data */
+    div[data-testid="stDateInput"] input {
+        caret-color: transparent !important;
+        cursor: pointer !important;
+        user-select: none !important;
+        -webkit-user-select: none !important;
+    }
 </style>
 """, unsafe_allow_html=True)
+
+# Script para forçar atributo readonly e inputmode none nos campos de data
+components.html("""
+<script>
+    function travarTecladoData() {
+        const inputsData = window.parent.document.querySelectorAll('div[data-testid="stDateInput"] input');
+        inputsData.forEach(input => {
+            input.setAttribute('readonly', 'true');
+            input.setAttribute('inputmode', 'none');
+        });
+    }
+    // Aplica na inicialização e monitora atualizações na tela
+    travarTecladoData();
+    const observer = new MutationObserver(travarTecladoData);
+    observer.observe(window.parent.document.body, { childList: true, subtree: true });
+</script>
+""", height=0, width=0)
 
 # Opções fixas
 OPCOES_RECEITA_FIXAS = ["Uber", "99", "Pedágio Uber", "Particular"]
@@ -129,7 +160,7 @@ df_completo = carregar_dados()
 if "msg_sucesso" in st.session_state:
     st.success(st.session_state.pop("msg_sucesso"))
 
-# Modal de Edição com fechamento garantido no Cancelar
+# Modal de Edição
 @st.dialog("✏️ Editar Lançamento")
 def modal_editar_registro(item_id, item_data, item_tipo, item_cat, item_desc, item_val):
     badge = "🟢" if item_tipo == "Receita" else "🔴"
@@ -172,7 +203,6 @@ def modal_editar_registro(item_id, item_data, item_tipo, item_cat, item_desc, it
                 st.session_state["msg_sucesso"] = f"Lançamento ID #{item_id} atualizado com sucesso!"
                 st.rerun()
 
-    # Botão de cancelar fora do formulário para fechar o diálogo instantaneamente
     if st.button("✖️ Cancelar e Fechar", use_container_width=True):
         st.rerun()
 
