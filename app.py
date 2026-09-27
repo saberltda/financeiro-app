@@ -28,6 +28,11 @@ st.markdown("""
         background-color: rgba(128, 128, 128, 0.07);
         margin-bottom: 8px;
     }
+    /* Impede cursor de digitação nos inputs de data */
+    div[data-testid="stDateInput"] input {
+        caret-color: transparent !important;
+        cursor: pointer !important;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -136,9 +141,12 @@ df_completo = carregar_dados()
 if "msg_sucesso" in st.session_state:
     st.success(st.session_state.pop("msg_sucesso"))
 
-# Estado da data no formulário de inserção
+# Controle de estado para garantir que a data sempre inicie em HOJE e atualize com os botões
 if "data_novo_lancamento" not in st.session_state:
     st.session_state["data_novo_lancamento"] = date.today()
+
+if "novo_date_key_ver" not in st.session_state:
+    st.session_state["novo_date_key_ver"] = 0
 
 # Modal de Edição
 @st.dialog("✏️ Editar Lançamento")
@@ -146,27 +154,35 @@ def modal_editar_registro(item_id, item_data, item_tipo, item_cat, item_desc, it
     badge = "🟢" if item_tipo == "Receita" else "🔴"
     st.markdown(f"**Tipo:** {badge} **{item_tipo}**")
     
-    if f"data_ed_{item_id}" not in st.session_state:
-        st.session_state[f"data_ed_{item_id}"] = item_data
+    chave_data = f"data_ed_{item_id}"
+    chave_ver = f"ver_ed_{item_id}"
+    
+    if chave_data not in st.session_state:
+        st.session_state[chave_data] = item_data
+    if chave_ver not in st.session_state:
+        st.session_state[chave_ver] = 0
 
-    # Atalhos rápidos de data na edição
-    c_btn1, c_btn2, c_dt = st.columns([1, 1, 2])
-    with c_btn1:
+    st.markdown("**Data do Registro:**")
+    col_eh, col_eo, col_ed = st.columns([1, 1, 2])
+    
+    with col_eh:
         if st.button("Hoje", key=f"btn_h_{item_id}", use_container_width=True):
-            st.session_state[f"data_ed_{item_id}"] = date.today()
+            st.session_state[chave_data] = date.today()
+            st.session_state[chave_ver] += 1
             st.rerun()
-    with c_btn2:
+    with col_eo:
         if st.button("Ontem", key=f"btn_o_{item_id}", use_container_width=True):
-            st.session_state[f"data_ed_{item_id}"] = date.today() - timedelta(days=1)
+            st.session_state[chave_data] = date.today() - timedelta(days=1)
+            st.session_state[chave_ver] += 1
             st.rerun()
-    with c_dt:
+    with col_ed:
         nova_data = st.date_input(
-            "Data:", 
-            value=st.session_state[f"data_ed_{item_id}"], 
-            key=f"input_dt_{item_id}",
+            "Selecionar data",
+            value=st.session_state[chave_data],
+            key=f"ed_dt_{item_id}_{st.session_state[chave_ver]}",
             label_visibility="collapsed"
         )
-        st.session_state[f"data_ed_{item_id}"] = nova_data
+        st.session_state[chave_data] = nova_data
 
     with st.form(f"form_dialog_edicao_{item_id}"):
         novo_val_str = st.text_input("Valor (R$):", value=f"{float(item_val):.2f}".replace(".", ","))
@@ -197,13 +213,15 @@ def modal_editar_registro(item_id, item_data, item_tipo, item_cat, item_desc, it
             elif cat_sel == "Outro" and not cat_final:
                 st.error("Indique o nome da categoria 'Outro'.")
             else:
-                atualizar_registro(item_id, st.session_state[f"data_ed_{item_id}"], item_tipo, cat_final, nova_desc, v_num)
-                st.session_state.pop(f"data_ed_{item_id}", None)
+                atualizar_registro(item_id, st.session_state[chave_data], item_tipo, cat_final, nova_desc, v_num)
+                st.session_state.pop(chave_data, None)
+                st.session_state.pop(chave_ver, None)
                 st.session_state["msg_sucesso"] = f"Lançamento ID #{item_id} atualizado com sucesso!"
                 st.rerun()
 
     if st.button("✖️ Cancelar e Fechar", use_container_width=True):
-        st.session_state.pop(f"data_ed_{item_id}", None)
+        st.session_state.pop(chave_data, None)
+        st.session_state.pop(chave_ver, None)
         st.rerun()
 
 @st.dialog("🗑️ Confirmar Exclusão")
@@ -237,25 +255,33 @@ with tab_novo:
     with col_t2:
         cat_selecionada = st.selectbox("Categoria / Atividade", opcoes_cat, key="novo_cat_box")
 
-    # Atalhos rápidos de data: Hoje, Ontem ou escolher no calendário
-    st.caption("Data do Lançamento:")
+    # Seleção de data com atalhos funcionais que alteram o calendário imediatamente
+    st.markdown("**Data do Lançamento:**")
     col_h, col_o, col_d = st.columns([1, 1, 2])
+    
     with col_h:
         if st.button("📅 Hoje", use_container_width=True):
             st.session_state["data_novo_lancamento"] = date.today()
+            st.session_state["novo_date_key_ver"] += 1
             st.rerun()
+            
     with col_o:
         if st.button("📅 Ontem", use_container_width=True):
             st.session_state["data_novo_lancamento"] = date.today() - timedelta(days=1)
+            st.session_state["novo_date_key_ver"] += 1
             st.rerun()
+            
     with col_d:
         data_escolhida = st.date_input(
-            "Selecionar Data", 
+            "Selecionar data",
             value=st.session_state["data_novo_lancamento"],
-            key="input_data_novo",
+            key=f"input_date_novo_{st.session_state['novo_date_key_ver']}",
             label_visibility="collapsed"
         )
         st.session_state["data_novo_lancamento"] = data_escolhida
+
+    # Identificação visual da data selecionada
+    st.caption(f"🗓️ Data definida: **{st.session_state['data_novo_lancamento'].strftime('%d/%m/%Y')}**")
 
     with st.form("form_novo_lancamento", clear_on_submit=True):
         valor_raw = st.text_input("Valor (R$)", placeholder="Ex: 5,00 ou 150,00")
@@ -279,7 +305,11 @@ with tab_novo:
                 st.error("Por favor, indique a categoria em 'Outro'.")
             else:
                 tipo_bd = "Receita" if eh_receita else "Despesa"
-                inserir_registro(st.session_state["data_novo_lancamento"], tipo_bd, cat_final, descricao_input.strip(), valor_num)
+                data_para_gravar = st.session_state["data_novo_lancamento"]
+                inserir_registro(data_para_gravar, tipo_bd, cat_final, descricao_input.strip(), valor_num)
+                # Reseta para Hoje após salvar
+                st.session_state["data_novo_lancamento"] = date.today()
+                st.session_state["novo_date_key_ver"] += 1
                 st.session_state["msg_sucesso"] = "Lançamento salvo com sucesso!"
                 st.rerun()
 
@@ -552,25 +582,22 @@ else:
             else:
                 st.caption("Sem despesas no período.")
 
-# Script injetado para forçar o fechamento imediato do teclado em toques de data
+# Bloqueio rigoroso de teclado no campo do calendário
 components.html("""
 <script>
-    function fecharTecladoImediatamente() {
+    function travarTecladoData() {
         const doc = window.parent.document;
         const inputs = doc.querySelectorAll('div[data-testid="stDateInput"] input');
         inputs.forEach(input => {
             input.setAttribute('inputmode', 'none');
             input.setAttribute('readonly', 'true');
-            input.addEventListener('touchstart', function() {
-                setTimeout(() => { input.blur(); }, 50);
-            }, { passive: true });
-            input.addEventListener('focus', function() {
+            input.onfocus = function() {
                 input.blur();
-            });
+            };
         });
     }
-    fecharTecladoImediatamente();
-    const obs = new MutationObserver(fecharTecladoImediatamente);
+    travarTecladoData();
+    const obs = new MutationObserver(travarTecladoData);
     obs.observe(window.parent.document.body, { childList: true, subtree: true });
 </script>
 """, height=0, width=0)
