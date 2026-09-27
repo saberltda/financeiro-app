@@ -3,6 +3,7 @@ import pandas as pd
 from datetime import date, timedelta
 import plotly.express as px
 from sqlalchemy import create_engine, text
+import streamlit.components.v1 as components
 
 st.set_page_config(
     page_title="Controle Motorista App", 
@@ -11,7 +12,7 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# Estilização visual e bloqueio do teclado no calendário móvel
+# Estilização visual moderna e compacta para celular
 st.markdown("""
 <style>
     div[data-testid="stMetricValue"] > div {
@@ -21,42 +22,13 @@ st.markdown("""
     .stButton button {
         border-radius: 8px;
     }
-    
-    /* BLOQUEIO DO TECLADO NO CALENDÁRIO */
-    /* Impede o input de texto do date_input de receber foco de digitação */
-    div[data-testid="stDateInput"] input {
-        pointer-events: none !important;
-        caret-color: transparent !important;
-        user-select: none !important;
-        -webkit-user-select: none !important;
-    }
-    
-    /* Mantém o contêiner clicável para acionar a janela suspensa do calendário */
-    div[data-testid="stDateInput"] > div {
-        cursor: pointer !important;
+    .card-registro {
+        padding: 10px 14px;
+        border-radius: 8px;
+        background-color: rgba(128, 128, 128, 0.07);
+        margin-bottom: 8px;
     }
 </style>
-
-<script>
-    // Remove o foco ativo caso o navegador móvel tente forçar o teclado
-    function desativarTecladoData() {
-        const doc = window.parent.document;
-        const dateInputs = doc.querySelectorAll('div[data-testid="stDateInput"] input');
-        dateInputs.forEach(input => {
-            input.setAttribute('readonly', 'true');
-            input.setAttribute('inputmode', 'none');
-            input.addEventListener('focus', function(e) {
-                e.preventDefault();
-                input.blur();
-            });
-        });
-    }
-    
-    // Executa continuamente via MutationObserver para cobrir abas e modais dinâmicos
-    desativarTecladoData();
-    const observer = new MutationObserver(desativarTecladoData);
-    observer.observe(window.parent.document.body, { childList: true, subtree: true });
-</script>
 """, unsafe_allow_html=True)
 
 # Opções fixas
@@ -164,18 +136,40 @@ df_completo = carregar_dados()
 if "msg_sucesso" in st.session_state:
     st.success(st.session_state.pop("msg_sucesso"))
 
-# Modal de Edição (Usa calendário com bloqueio de foco)
+# Estado da data no formulário de inserção
+if "data_novo_lancamento" not in st.session_state:
+    st.session_state["data_novo_lancamento"] = date.today()
+
+# Modal de Edição
 @st.dialog("✏️ Editar Lançamento")
 def modal_editar_registro(item_id, item_data, item_tipo, item_cat, item_desc, item_val):
     badge = "🟢" if item_tipo == "Receita" else "🔴"
     st.markdown(f"**Tipo:** {badge} **{item_tipo}**")
     
-    with st.form("form_dialog_edicao"):
-        c1, c2 = st.columns(2)
-        with c1:
-            nova_data = st.date_input("Data:", value=item_data)
-        with c2:
-            novo_val_str = st.text_input("Valor (R$):", value=f"{float(item_val):.2f}".replace(".", ","))
+    if f"data_ed_{item_id}" not in st.session_state:
+        st.session_state[f"data_ed_{item_id}"] = item_data
+
+    # Atalhos rápidos de data na edição
+    c_btn1, c_btn2, c_dt = st.columns([1, 1, 2])
+    with c_btn1:
+        if st.button("Hoje", key=f"btn_h_{item_id}", use_container_width=True):
+            st.session_state[f"data_ed_{item_id}"] = date.today()
+            st.rerun()
+    with c_btn2:
+        if st.button("Ontem", key=f"btn_o_{item_id}", use_container_width=True):
+            st.session_state[f"data_ed_{item_id}"] = date.today() - timedelta(days=1)
+            st.rerun()
+    with c_dt:
+        nova_data = st.date_input(
+            "Data:", 
+            value=st.session_state[f"data_ed_{item_id}"], 
+            key=f"input_dt_{item_id}",
+            label_visibility="collapsed"
+        )
+        st.session_state[f"data_ed_{item_id}"] = nova_data
+
+    with st.form(f"form_dialog_edicao_{item_id}"):
+        novo_val_str = st.text_input("Valor (R$):", value=f"{float(item_val):.2f}".replace(".", ","))
 
         opcoes_lista = OPCOES_RECEITA_FORM if item_tipo == "Receita" else OPCOES_DESPESA_FORM
         
@@ -203,11 +197,13 @@ def modal_editar_registro(item_id, item_data, item_tipo, item_cat, item_desc, it
             elif cat_sel == "Outro" and not cat_final:
                 st.error("Indique o nome da categoria 'Outro'.")
             else:
-                atualizar_registro(item_id, nova_data, item_tipo, cat_final, nova_desc, v_num)
+                atualizar_registro(item_id, st.session_state[f"data_ed_{item_id}"], item_tipo, cat_final, nova_desc, v_num)
+                st.session_state.pop(f"data_ed_{item_id}", None)
                 st.session_state["msg_sucesso"] = f"Lançamento ID #{item_id} atualizado com sucesso!"
                 st.rerun()
 
     if st.button("✖️ Cancelar e Fechar", use_container_width=True):
+        st.session_state.pop(f"data_ed_{item_id}", None)
         st.rerun()
 
 @st.dialog("🗑️ Confirmar Exclusão")
@@ -241,12 +237,28 @@ with tab_novo:
     with col_t2:
         cat_selecionada = st.selectbox("Categoria / Atividade", opcoes_cat, key="novo_cat_box")
 
+    # Atalhos rápidos de data: Hoje, Ontem ou escolher no calendário
+    st.caption("Data do Lançamento:")
+    col_h, col_o, col_d = st.columns([1, 1, 2])
+    with col_h:
+        if st.button("📅 Hoje", use_container_width=True):
+            st.session_state["data_novo_lancamento"] = date.today()
+            st.rerun()
+    with col_o:
+        if st.button("📅 Ontem", use_container_width=True):
+            st.session_state["data_novo_lancamento"] = date.today() - timedelta(days=1)
+            st.rerun()
+    with col_d:
+        data_escolhida = st.date_input(
+            "Selecionar Data", 
+            value=st.session_state["data_novo_lancamento"],
+            key="input_data_novo",
+            label_visibility="collapsed"
+        )
+        st.session_state["data_novo_lancamento"] = data_escolhida
+
     with st.form("form_novo_lancamento", clear_on_submit=True):
-        col_f1, col_f2 = st.columns(2)
-        with col_f1:
-            data_reg = st.date_input("Data:", value=date.today())
-        with col_f2:
-            valor_raw = st.text_input("Valor (R$)", placeholder="Ex: 5,00 ou 150,00")
+        valor_raw = st.text_input("Valor (R$)", placeholder="Ex: 5,00 ou 150,00")
 
         cat_final = cat_selecionada
         if cat_selecionada == "Outro":
@@ -267,7 +279,7 @@ with tab_novo:
                 st.error("Por favor, indique a categoria em 'Outro'.")
             else:
                 tipo_bd = "Receita" if eh_receita else "Despesa"
-                inserir_registro(data_reg, tipo_bd, cat_final, descricao_input.strip(), valor_num)
+                inserir_registro(st.session_state["data_novo_lancamento"], tipo_bd, cat_final, descricao_input.strip(), valor_num)
                 st.session_state["msg_sucesso"] = "Lançamento salvo com sucesso!"
                 st.rerun()
 
@@ -342,7 +354,7 @@ else:
     elif periodo_selecionado == "Tudo":
         d_inicio = df["data"].min().date()
         d_fim = df["data"].max().date()
-    else: # Personalizado com intervalo nativo
+    else:
         min_base = df["data"].min().date()
         max_base = df["data"].max().date()
         intervalo = st.date_input("Escolha as datas:", value=(min_base, max_base))
@@ -539,3 +551,26 @@ else:
                 st.plotly_chart(fig_pie_desp, use_container_width=True)
             else:
                 st.caption("Sem despesas no período.")
+
+# Script injetado para forçar o fechamento imediato do teclado em toques de data
+components.html("""
+<script>
+    function fecharTecladoImediatamente() {
+        const doc = window.parent.document;
+        const inputs = doc.querySelectorAll('div[data-testid="stDateInput"] input');
+        inputs.forEach(input => {
+            input.setAttribute('inputmode', 'none');
+            input.setAttribute('readonly', 'true');
+            input.addEventListener('touchstart', function() {
+                setTimeout(() => { input.blur(); }, 50);
+            }, { passive: true });
+            input.addEventListener('focus', function() {
+                input.blur();
+            });
+        });
+    }
+    fecharTecladoImediatamente();
+    const obs = new MutationObserver(fecharTecladoImediatamente);
+    obs.observe(window.parent.document.body, { childList: true, subtree: true });
+</script>
+""", height=0, width=0)
