@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
-from datetime import date, timedelta
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 import plotly.express as px
 from sqlalchemy import create_engine, text
 import streamlit.components.v1 as components
@@ -12,6 +13,12 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="collapsed"
 )
+
+# Fuso horário oficial de Brasília
+FUSO_SP = ZoneInfo("America/Sao_Paulo")
+
+def obter_data_hoje():
+    return datetime.now(FUSO_SP).date()
 
 # Estilização visual moderna e compacta para celular
 st.markdown("""
@@ -44,7 +51,6 @@ def verificar_login():
     if st.session_state["autenticado"]:
         return True
 
-    # Tela de Acesso
     col_vazia1, col_centro, col_vazia2 = st.columns([1, 2.5, 1])
     with col_centro:
         st.markdown("<div style='height: 40px;'></div>", unsafe_allow_html=True)
@@ -57,7 +63,6 @@ def verificar_login():
             btn_entrar = st.form_submit_button("🔓 Entrar", use_container_width=True, type="primary")
 
             if btn_entrar:
-                # Comparações seguras contra timing attacks
                 user_correto = st.secrets["auth"]["username"]
                 senha_correta = st.secrets["auth"]["password"]
 
@@ -188,9 +193,9 @@ df_completo = carregar_dados()
 if "msg_sucesso" in st.session_state:
     st.success(st.session_state.pop("msg_sucesso"))
 
-# Estado da data
+# Estado da data baseado no horário de Brasília
 if "data_novo_lancamento" not in st.session_state:
-    st.session_state["data_novo_lancamento"] = date.today()
+    st.session_state["data_novo_lancamento"] = obter_data_hoje()
 
 if "novo_date_key_ver" not in st.session_state:
     st.session_state["novo_date_key_ver"] = 0
@@ -214,12 +219,12 @@ def modal_editar_registro(item_id, item_data, item_tipo, item_cat, item_desc, it
     
     with col_eh:
         if st.button("Hoje", key=f"btn_h_{item_id}", use_container_width=True):
-            st.session_state[chave_data] = date.today()
+            st.session_state[chave_data] = obter_data_hoje()
             st.session_state[chave_ver] += 1
             st.rerun()
     with col_eo:
         if st.button("Ontem", key=f"btn_o_{item_id}", use_container_width=True):
-            st.session_state[chave_data] = date.today() - timedelta(days=1)
+            st.session_state[chave_data] = obter_data_hoje() - timedelta(days=1)
             st.session_state[chave_ver] += 1
             st.rerun()
     with col_ed:
@@ -290,30 +295,21 @@ def modal_excluir_registro(item_id, item_cat, item_val_formatado):
 # Abas Nativas
 tab_novo, tab_gerenciar = st.tabs(["➕ Novo Lançamento", "⚙️ Gerenciar Registros"])
 
-# --- ABA 1: NOVO LANÇAMENTO ---
+# --- ABA 1: NOVO LANÇAMENTO (REORGANIZADO) ---
 with tab_novo:
-    col_t1, col_t2 = st.columns(2)
-    with col_t1:
-        tipo_escolhido = st.radio("Tipo", ["Receita (Ganhos)", "Despesa (Custos)"], horizontal=True, key="novo_tipo_radio")
-    
-    eh_receita = tipo_escolhido == "Receita (Ganhos)"
-    opcoes_cat = OPCOES_RECEITA_FORM if eh_receita else OPCOES_DESPESA_FORM
-
-    with col_t2:
-        cat_selecionada = st.selectbox("Categoria / Atividade", opcoes_cat, key="novo_cat_box")
-
+    # 1. Data fica no topo com atalhos rápidos
     st.markdown("**Data do Lançamento:**")
     col_h, col_o, col_d = st.columns([1, 1, 2])
     
     with col_h:
         if st.button("📅 Hoje", use_container_width=True):
-            st.session_state["data_novo_lancamento"] = date.today()
+            st.session_state["data_novo_lancamento"] = obter_data_hoje()
             st.session_state["novo_date_key_ver"] += 1
             st.rerun()
             
     with col_o:
         if st.button("📅 Ontem", use_container_width=True):
-            st.session_state["data_novo_lancamento"] = date.today() - timedelta(days=1)
+            st.session_state["data_novo_lancamento"] = obter_data_hoje() - timedelta(days=1)
             st.session_state["novo_date_key_ver"] += 1
             st.rerun()
             
@@ -328,15 +324,28 @@ with tab_novo:
 
     st.caption(f"🗓️ Data definida: **{st.session_state['data_novo_lancamento'].strftime('%d/%m/%Y')}**")
 
+    # 2. Todos os campos reunidos abaixo (Tipo, Categoria, Valor e Observação)
     with st.form("form_novo_lancamento", clear_on_submit=True):
-        valor_raw = st.text_input("Valor (R$)", placeholder="Ex: 5,00 ou 150,00")
+        col_t1, col_t2 = st.columns(2)
+        with col_t1:
+            tipo_escolhido = st.radio("Tipo", ["Receita (Ganhos)", "Despesa (Custos)"], horizontal=True, key="novo_tipo_radio")
+        
+        eh_receita = tipo_escolhido == "Receita (Ganhos)"
+        opcoes_cat = OPCOES_RECEITA_FORM if eh_receita else OPCOES_DESPESA_FORM
+
+        with col_t2:
+            cat_selecionada = st.selectbox("Categoria / Atividade", opcoes_cat, key="novo_cat_box")
 
         cat_final = cat_selecionada
         if cat_selecionada == "Outro":
             cat_especificada = st.text_input("Especifique a categoria *", placeholder="Ex: Corrida particular, Troca de óleo...")
             cat_final = cat_especificada.strip()
 
-        descricao_input = st.text_input("Observação (Opcional)", placeholder="Ex: Posto Ipiranga, corrida longa...")
+        col_v1, col_v2 = st.columns([1.2, 2])
+        with col_v1:
+            valor_raw = st.text_input("Valor (R$)", placeholder="Ex: 5,00 ou 150,00")
+        with col_v2:
+            descricao_input = st.text_input("Observação (Opcional)", placeholder="Ex: Posto Ipiranga, corrida longa...")
 
         btn_salvar = st.form_submit_button("💾 Salvar Registro", use_container_width=True, type="primary")
 
@@ -352,7 +361,7 @@ with tab_novo:
                 tipo_bd = "Receita" if eh_receita else "Despesa"
                 data_para_gravar = st.session_state["data_novo_lancamento"]
                 inserir_registro(data_para_gravar, tipo_bd, cat_final, descricao_input.strip(), valor_num)
-                st.session_state["data_novo_lancamento"] = date.today()
+                st.session_state["data_novo_lancamento"] = obter_data_hoje()
                 st.session_state["novo_date_key_ver"] += 1
                 st.session_state["msg_sucesso"] = "Lançamento salvo com sucesso!"
                 st.rerun()
@@ -410,7 +419,7 @@ else:
     else:
         periodo_selecionado = st.radio("Período de Análise:", opcoes_periodo, horizontal=True)
 
-    hoje = date.today()
+    hoje = obter_data_hoje()
 
     if periodo_selecionado == "Diário":
         d_inicio = hoje
