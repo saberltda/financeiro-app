@@ -129,7 +129,6 @@ elif raw_url.startswith("postgres://"):
 if "sslmode" not in raw_url:
     raw_url += "?sslmode=require" if "?" not in raw_url else "&sslmode=require"
 
-# Otimização do pool com pre_ping e recycle
 @st.cache_resource
 def get_db_engine():
     return create_engine(
@@ -140,7 +139,7 @@ def get_db_engine():
 
 engine = get_db_engine()
 
-# Inicialização executada apenas 1 vez por ciclo do aplicativo
+# Inicialização executada apenas 1 vez por ciclo
 if "db_inicializado" not in st.session_state:
     try:
         with engine.begin() as conn:
@@ -159,7 +158,7 @@ if "db_inicializado" not in st.session_state:
         st.error(f"Erro de conexão com o banco de dados: {str(e)}")
         st.stop()
 
-# Cache de alta velocidade para leitura dos dados (evita idas ao Supabase a cada clique)
+# Cache de alta velocidade para leitura dos dados
 @st.cache_data(ttl=600)
 def carregar_dados():
     with engine.connect() as conn:
@@ -197,7 +196,6 @@ def deletar_registro(id_reg):
         conn.execute(text('DELETE FROM lancamentos WHERE id = :id'), {"id": id_reg})
     carregar_dados.clear()
 
-# Carregamento único
 df_completo = carregar_dados()
 
 # Notificação temporária de sucesso
@@ -306,8 +304,9 @@ def modal_excluir_registro(item_id, item_cat, item_val_formatado):
 # Abas Nativas
 tab_novo, tab_gerenciar = st.tabs(["➕ Novo Lançamento", "⚙️ Gerenciar Registros"])
 
-# --- ABA 1: NOVO LANÇAMENTO ---
+# --- ABA 1: NOVO LANÇAMENTO (SELETORES INTERATIVOS FORA DO FORM) ---
 with tab_novo:
+    # 1. Seleção de Data com atalhos rápidos
     st.markdown("**Data do Lançamento:**")
     col_h, col_o, col_d = st.columns([1, 1, 2])
     
@@ -334,17 +333,28 @@ with tab_novo:
 
     st.caption(f"🗓️ Data definida: **{st.session_state['data_novo_lancamento'].strftime('%d/%m/%Y')}**")
 
+    # 2. Seleção de Tipo e Categoria FORA do formulário para atualizar instantaneamente
+    col_t1, col_t2 = st.columns(2)
+    with col_t1:
+        tipo_escolhido = st.radio(
+            "Tipo", 
+            ["Receita (Ganhos)", "Despesa (Custos)"], 
+            horizontal=True, 
+            key="novo_tipo_radio"
+        )
+    
+    eh_receita = tipo_escolhido == "Receita (Ganhos)"
+    opcoes_cat = OPCOES_RECEITA_FORM if eh_receita else OPCOES_DESPESA_FORM
+
+    with col_t2:
+        cat_selecionada = st.selectbox(
+            "Categoria / Atividade", 
+            opcoes_cat, 
+            key="novo_cat_box"
+        )
+
+    # 3. Formulário de envio com os dados de digitação
     with st.form("form_novo_lancamento", clear_on_submit=True):
-        col_t1, col_t2 = st.columns(2)
-        with col_t1:
-            tipo_escolhido = st.radio("Tipo", ["Receita (Ganhos)", "Despesa (Custos)"], horizontal=True, key="novo_tipo_radio")
-        
-        eh_receita = tipo_escolhido == "Receita (Ganhos)"
-        opcoes_cat = OPCOES_RECEITA_FORM if eh_receita else OPCOES_DESPESA_FORM
-
-        with col_t2:
-            cat_selecionada = st.selectbox("Categoria / Atividade", opcoes_cat, key="novo_cat_box")
-
         cat_final = cat_selecionada
         if cat_selecionada == "Outro":
             cat_especificada = st.text_input("Especifique a categoria *", placeholder="Ex: Corrida particular, Troca de óleo...")
@@ -596,7 +606,7 @@ else:
                 use_container_width=True
             )
 
-        # --- SEÇÃO 1 DE GRÁFICOS: DISTRIBUIÇÃO POR ORIGEM E CUSTO (PIZZAS PRIMEIRO) ---
+        # --- SEÇÃO 1 DE GRÁFICOS: DISTRIBUIÇÃO POR ORIGEM E CUSTO ---
         st.markdown("---")
         st.markdown("#### 📊 Distribuição por Origem e Custo")
         col_d1, col_d2 = st.columns(2)
@@ -634,7 +644,7 @@ else:
             else:
                 st.caption("Sem despesas no período.")
 
-        # --- SEÇÃO 2 DE GRÁFICOS: DESEMPENHO NO PERÍODO (BARRAS NO FINAL DA TELA) ---
+        # --- SEÇÃO 2 DE GRÁFICOS: DESEMPENHO NO PERÍODO (NO FINAL DA TELA) ---
         st.markdown("---")
         st.markdown("#### 📈 Desempenho no Período")
         
@@ -660,7 +670,6 @@ else:
             color_discrete_map={"Receita": "#00CC96", "Despesa": "#EF553B"}
         )
         
-        # Trava os eixos e desativa o modo de arrasto para não interferir na rolagem da tela no celular
         fig_bar.update_layout(
             margin=dict(l=10, r=10, t=15, b=25),
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
