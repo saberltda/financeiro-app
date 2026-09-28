@@ -30,11 +30,11 @@ st.markdown("""
     .stButton button {
         border-radius: 8px;
     }
-    .card-km {
+    .card-km-destaque {
         padding: 14px 18px;
         border-radius: 10px;
         background-color: rgba(0, 204, 150, 0.08);
-        border: 1px solid rgba(0, 204, 150, 0.25);
+        border: 1px solid rgba(0, 204, 150, 0.35);
         margin-bottom: 14px;
     }
     div[data-testid="stDateInput"] input {
@@ -91,7 +91,7 @@ with c_sair:
         st.session_state["autenticado"] = False
         st.rerun()
 
-# Nomenclaturas fixas de categorias
+# Nomenclaturas fixas
 OPCOES_RECEITA_FIXAS = ["Uber sem pedágios", "99 com pedágios", "Pedágio Uber", "Particular"]
 OPCOES_DESPESA_FIXAS = ["Combustível", "Lavagem", "SemParar do dia"]
 
@@ -111,6 +111,11 @@ DIAS_SEMANA_PT = {
 def formata_real(valor):
     return f"R$ {valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
+def formata_km(valor):
+    if pd.isnull(valor) or valor is None:
+        return "0 km"
+    return f"{int(round(valor)):,}".replace(",", ".") + " km"
+
 def converter_valor(texto):
     if not texto:
         return 0.0
@@ -127,12 +132,13 @@ def converter_valor(texto):
     except ValueError:
         return -1.0
 
-def converter_km(texto):
+# Converte quilometragem estritamente para INTEIRO
+def converter_km_inteiro(texto):
     if not texto:
         return None
-    texto_limpo = str(texto).strip().replace(".", "").replace(",", ".")
+    texto_limpo = str(texto).strip().replace(".", "").replace(",", "").replace("km", "").replace("KM", "").strip()
     try:
-        val = float(texto_limpo)
+        val = int(texto_limpo)
         return val if val >= 0 else None
     except ValueError:
         return None
@@ -170,9 +176,9 @@ if "db_inicializado" not in st.session_state:
             conn.execute(text('''
                 CREATE TABLE IF NOT EXISTS turnos_km (
                     data DATE PRIMARY KEY,
-                    km_inicial NUMERIC(10, 2),
-                    km_final NUMERIC(10, 2),
-                    km_rodado NUMERIC(10, 2)
+                    km_inicial INTEGER,
+                    km_final INTEGER,
+                    km_rodado INTEGER
                 );
             '''))
         st.session_state["db_inicializado"] = True
@@ -180,7 +186,7 @@ if "db_inicializado" not in st.session_state:
         st.error(f"Erro de conexão com o banco de dados: {str(e)}")
         st.stop()
 
-# Operações de Banco de Dados com Cache e Tipagem Blindada
+# Operações de Banco de Dados com Cache
 @st.cache_data(ttl=600)
 def carregar_dados():
     with engine.connect() as conn:
@@ -206,15 +212,12 @@ def carregar_turnos_km():
     
     if not df_km.empty:
         df_km["data"] = pd.to_datetime(df_km["data"])
-        df_km["km_inicial"] = df_km["km_inicial"].astype(float)
-        df_km["km_final"] = df_km["km_final"].astype(float)
-        df_km["km_rodado"] = df_km["km_rodado"].astype(float)
+        df_km["km_inicial"] = pd.to_numeric(df_km["km_inicial"], errors="coerce")
+        df_km["km_final"] = pd.to_numeric(df_km["km_final"], errors="coerce")
+        df_km["km_rodado"] = pd.to_numeric(df_km["km_rodado"], errors="coerce")
     else:
         df_km = pd.DataFrame(columns=["data", "km_inicial", "km_final", "km_rodado"])
         df_km["data"] = pd.to_datetime(df_km["data"])
-        df_km["km_inicial"] = df_km["km_inicial"].astype(float)
-        df_km["km_final"] = df_km["km_final"].astype(float)
-        df_km["km_rodado"] = df_km["km_rodado"].astype(float)
     return df_km
 
 def salvar_km_inicial(data_reg, km_ini):
@@ -223,7 +226,11 @@ def salvar_km_inicial(data_reg, km_ini):
             INSERT INTO turnos_km (data, km_inicial)
             VALUES (:data, :km_inicial)
             ON CONFLICT (data) DO UPDATE 
-            SET km_inicial = EXCLUDED.km_inicial;
+            SET km_inicial = EXCLUDED.km_inicial,
+                km_rodado = CASE 
+                    WHEN turnos_km.km_final IS NOT NULL THEN turnos_km.km_final - EXCLUDED.km_inicial
+                    ELSE turnos_km.km_rodado 
+                END;
         '''), {"data": data_reg, "km_inicial": km_ini})
     carregar_turnos_km.clear()
 
@@ -283,14 +290,14 @@ def gerar_dossie_ia(df_periodo, df_km_periodo, d_ini, d_end):
     lucro = tot_rec - tot_desp
     margem = (lucro / tot_rec * 100) if tot_rec > 0 else 0.0
 
-    tot_km = df_km_periodo["km_rodado"].dropna().sum() if not df_km_periodo.empty else 0.0
+    tot_km = int(round(df_km_periodo["km_rodado"].dropna().sum())) if not df_km_periodo.empty else 0
     rec_por_km = (tot_rec / tot_km) if tot_km > 0 else 0.0
     custo_por_km = (tot_desp / tot_km) if tot_km > 0 else 0.0
     lucro_por_km = (lucro / tot_km) if tot_km > 0 else 0.0
 
     dias_trabalhados = df_local["data"].dt.date.nunique() if not df_local.empty else len(df_km_periodo)
     media_lucro_dia = (lucro / dias_trabalhados) if dias_trabalhados > 0 else 0.0
-    media_km_dia = (tot_km / dias_trabalhados) if dias_trabalhados > 0 else 0.0
+    media_km_dia = (tot_km / dias_trabalhados) if dias_trabalhados > 0 else 0
 
     rec_por_cat = df_local[df_local["tipo"] == "Receita"].groupby("categoria")["valor"].sum().to_dict() if not df_local.empty else {}
     desp_por_cat = df_local[df_local["tipo"] == "Despesa"].groupby("categoria")["valor"].sum().to_dict() if not df_local.empty else {}
@@ -316,7 +323,7 @@ def gerar_dossie_ia(df_periodo, df_km_periodo, d_ini, d_end):
         "## 1. RESUMO EXECUTIVO DO PERÍODO",
         f"- **Período:** {d_ini.strftime('%d/%m/%Y')} até {d_end.strftime('%d/%m/%Y')}",
         f"- **Dias Trabalhados:** {dias_trabalhados} dia(s)",
-        f"- **Quilometragem Total:** {tot_km:.1f} km (Média: {media_km_dia:.1f} km/dia)",
+        f"- **Quilometragem Total:** {formata_km(tot_km)} (Média: {formata_km(media_km_dia)}/dia)",
         f"- **Faturamento Bruto:** {formata_real(tot_rec)}",
         f"- **Despesas Totais:** {formata_real(tot_desp)}",
         f"- **Lucro Líquido:** {formata_real(lucro)}",
@@ -342,9 +349,9 @@ def gerar_dossie_ia(df_periodo, df_km_periodo, d_ini, d_end):
     prompt_linhas.extend(["", "---", "## 4. REGISTRO DE TURNOS (KM)"])
     if not df_km_periodo.empty:
         for _, row in df_km_periodo.iterrows():
-            k_rod = f"{row['km_rodado']:.1f} km" if pd.notnull(row['km_rodado']) else "Em aberto"
-            k_ini = f"{row['km_inicial']:.1f}" if pd.notnull(row['km_inicial']) else "-"
-            k_fim = f"{row['km_final']:.1f}" if pd.notnull(row['km_final']) else "-"
+            k_rod = formata_km(row['km_rodado']) if pd.notnull(row['km_rodado']) else "Em aberto"
+            k_ini = f"{int(row['km_inicial']):,}".replace(",", ".") if pd.notnull(row['km_inicial']) else "-"
+            k_fim = f"{int(row['km_final']):,}".replace(",", ".") if pd.notnull(row['km_final']) else "-"
             prompt_linhas.append(f"- **{row['data'].strftime('%d/%m/%Y')}:** KM Inicial: {k_ini} | KM Final: {k_fim} | Rodados: {k_rod}")
 
     return "\n".join(prompt_linhas)
@@ -362,6 +369,27 @@ if "data_turno" not in st.session_state:
 
 if "date_key_ver" not in st.session_state:
     st.session_state["date_key_ver"] = 0
+
+# Modal de Edição do KM Inicial
+@st.dialog("✏️ Corrigir KM Inicial")
+def modal_editar_km_inicial(data_ref, km_atual):
+    st.write(f"Alterar KM Inicial para o dia **{data_ref.strftime('%d/%m/%Y')}**:")
+    val_atual_str = str(int(km_atual)) if km_atual is not None else ""
+    novo_km_str = st.text_input("Novo KM Inicial:", value=val_atual_str, placeholder="Ex: 85420")
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("💾 Atualizar KM", type="primary", use_container_width=True):
+            novo_val = converter_km_inteiro(novo_km_str)
+            if novo_val is None or novo_val <= 0:
+                st.error("Digite um número inteiro válido.")
+            else:
+                salvar_km_inicial(data_ref, novo_val)
+                st.session_state["msg_sucesso"] = f"KM Inicial corrigido para {novo_val:,} km!".replace(",", ".")
+                st.rerun()
+    with col2:
+        if st.button("✖️ Cancelar", use_container_width=True):
+            st.rerun()
 
 # Modal de Edição de Lançamento Individual
 @st.dialog("✏️ Editar Lançamento")
@@ -431,12 +459,12 @@ with tab_turno:
     data_atual = st.session_state["data_turno"]
     st.caption(f"🗓️ Turno ativo: **{data_atual.strftime('%d/%m/%Y')}** ({DIAS_SEMANA_PT[data_atual.weekday()]})")
 
-    # Filtro blindado para verificação do dia
+    # Busca registro de KM do dia selecionado
     if not df_turnos_km.empty:
         turno_dia = df_turnos_km[df_turnos_km["data"].dt.date == data_atual]
-        km_ini_gravado = turno_dia["km_inicial"].values[0] if not turno_dia.empty and pd.notnull(turno_dia["km_inicial"].values[0]) else None
-        km_fim_gravado = turno_dia["km_final"].values[0] if not turno_dia.empty and pd.notnull(turno_dia["km_final"].values[0]) else None
-        km_rod_gravado = turno_dia["km_rodado"].values[0] if not turno_dia.empty and pd.notnull(turno_dia["km_rodado"].values[0]) else None
+        km_ini_gravado = int(turno_dia["km_inicial"].values[0]) if not turno_dia.empty and pd.notnull(turno_dia["km_inicial"].values[0]) else None
+        km_fim_gravado = int(turno_dia["km_final"].values[0]) if not turno_dia.empty and pd.notnull(turno_dia["km_final"].values[0]) else None
+        km_rod_gravado = int(turno_dia["km_rodado"].values[0]) if not turno_dia.empty and pd.notnull(turno_dia["km_rodado"].values[0]) else None
     else:
         km_ini_gravado = None
         km_fim_gravado = None
@@ -444,109 +472,124 @@ with tab_turno:
 
     # PASSO 1: INÍCIO DO DIA (KM INICIAL)
     st.markdown("#### 1️⃣ Início do Turno: Quilometragem Inicial")
+    
     if km_ini_gravado is not None:
-        st.success(f"🟢 **KM Inicial Registrado:** **{km_ini_gravado:,.1f} km**".replace(",", "X").replace(".", ",").replace("X", "."))
+        col_registrado, col_btn_editar = st.columns([3, 1.2])
+        with col_registrado:
+            km_ini_formatado = f"{km_ini_gravado:,}".replace(",", ".")
+            st.success(f"🔒 **KM Inicial Registrado:** **{km_ini_formatado} km**")
+        with col_btn_editar:
+            st.markdown("<div style='height: 4px;'></div>", unsafe_allow_html=True)
+            if st.button("✏️ Alterar KM Inicial", key="btn_abre_modal_kmi", use_container_width=True):
+                modal_editar_km_inicial(data_atual, km_ini_gravado)
     else:
         with st.form("form_km_inicial"):
             c_kmi, c_btnkmi = st.columns([2, 1])
             with c_kmi:
-                input_kmi = st.text_input("KM do Odômetro ao sair de casa:", placeholder="Ex: 85420")
+                input_kmi = st.text_input("Odômetro do carro ao sair de casa (somente números):", placeholder="Ex: 85420")
             with c_btnkmi:
                 st.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
                 btn_salvar_kmi = st.form_submit_button("Salvar KM Inicial", use_container_width=True, type="primary")
 
             if btn_salvar_kmi:
-                val_kmi = converter_km(input_kmi)
+                val_kmi = converter_km_inteiro(input_kmi)
                 if val_kmi is None or val_kmi <= 0:
-                    st.error("Informe um KM inicial válido.")
+                    st.error("Informe um número inteiro válido para o KM inicial.")
                 else:
                     salvar_km_inicial(data_atual, val_kmi)
-                    st.session_state["msg_sucesso"] = f"KM Inicial ({val_kmi:.1f}) salvo com sucesso!"
+                    st.session_state["msg_sucesso"] = f"KM Inicial ({val_kmi:,} km) registrado!".replace(",", ".")
                     st.rerun()
 
     st.markdown("---")
 
-    # PASSO 2: CHECKLIST DE FECHAMENTO COMPLETO
+    # PASSO 2: CHECKLIST DE FECHAMENTO (BLOQUEADO ATÉ SALVAR O KM INICIAL)
     st.markdown("#### 2️⃣ Fim do Turno: Checklist de Fechamento")
-    st.caption("Preencha o KM final e os valores do seu dia. Deixe zerado ou vazio o que não realizou.")
+    
+    if km_ini_gravado is None:
+        st.warning("⚠️ **Etapa Bloqueada:** Para liberar o checklist de fechamento e registrar seus ganhos/despesas, informe o **KM Inicial** no campo acima.")
+    else:
+        st.caption("Preencha o KM final e os valores realizados no seu turno. Campos zerados ou vazios serão desconsiderados.")
 
-    with st.form("form_fechamento_turno"):
-        st.markdown("**Quilometragem:**")
-        col_km1, col_km2 = st.columns(2)
-        with col_km1:
-            val_padrao_kmi = f"{km_ini_gravado:.1f}".replace(".", ",") if km_ini_gravado else ""
-            txt_kmi = st.text_input("KM Inicial do dia:", value=val_padrao_kmi, placeholder="Ex: 85420")
-        with col_km2:
-            val_padrao_kmf = f"{km_fim_gravado:.1f}".replace(".", ",") if km_fim_gravado else ""
-            txt_kmf = st.text_input("KM Final do dia:", value=val_padrao_kmf, placeholder="Ex: 85630")
+        with st.form("form_fechamento_turno"):
+            st.markdown("**Quilometragem do Dia:**")
+            col_km1, col_km2 = st.columns(2)
+            with col_km1:
+                st.text_input(
+                    "KM Inicial (Travado):", 
+                    value=f"{km_ini_gravado:,}".replace(",", ".") + " km", 
+                    disabled=True
+                )
+            with col_km2:
+                val_padrao_kmf = str(km_fim_gravado) if km_fim_gravado else ""
+                txt_kmf = st.text_input("KM Final do dia (somente números inteiros):", value=val_padrao_kmf, placeholder="Ex: 85630")
 
-        st.markdown("---")
-        st.markdown("##### 🟢 Ganhos do Dia (Receitas):")
-        col_r1, col_r2 = st.columns(2)
-        with col_r1:
-            v_uber = st.text_input("Uber sem pedágios (R$):", placeholder="0,00")
-            v_99 = st.text_input("99 com pedágios (R$):", placeholder="0,00")
-        with col_r2:
-            v_ped_uber = st.text_input("Reembolso Pedágio Uber (R$):", placeholder="0,00")
-            v_part = st.text_input("Corridas Particulares (R$):", placeholder="0,00")
+            st.markdown("---")
+            st.markdown("##### 🟢 Ganhos do Dia (Receitas):")
+            col_r1, col_r2 = st.columns(2)
+            with col_r1:
+                v_uber = st.text_input("Uber sem pedágios (R$):", placeholder="0,00")
+                v_99 = st.text_input("99 com pedágios (R$):", placeholder="0,00")
+            with col_r2:
+                v_ped_uber = st.text_input("Reembolso Pedágio Uber (R$):", placeholder="0,00")
+                v_part = st.text_input("Corridas Particulares (R$):", placeholder="0,00")
 
-        st.markdown("##### 🔴 Despesas do Turno:")
-        col_d1, col_d2 = st.columns(2)
-        with col_d1:
-            v_combustivel = st.text_input("Combustível (R$):", placeholder="0,00")
-            v_semparar = st.text_input("SemParar do dia / Pedágios (R$):", placeholder="0,00")
-        with col_d2:
-            v_lavagem = st.text_input("Lavagem (R$):", placeholder="0,00")
-            v_outra_desp = st.text_input("Outro Custo / Manutenção (R$):", placeholder="0,00")
+            st.markdown("##### 🔴 Despesas do Turno:")
+            col_d1, col_d2 = st.columns(2)
+            with col_d1:
+                v_combustivel = st.text_input("Combustível (R$):", placeholder="0,00")
+                v_semparar = st.text_input("SemParar do dia / Pedágios (R$):", placeholder="0,00")
+            with col_d2:
+                v_lavagem = st.text_input("Lavagem (R$):", placeholder="0,00")
+                v_outra_desp = st.text_input("Outro Custo / Manutenção (R$):", placeholder="0,00")
 
-        desc_outra_desp = st.text_input("Observação / Descrição de outro custo (Opcional):", placeholder="Ex: Troca de palheta, refeição...")
+            desc_outra_desp = st.text_input("Observação de outro custo (Opcional):", placeholder="Ex: Troca de palheta, refeição...")
 
-        btn_concluir_turno = st.form_submit_button("🏁 Concluir Fechamento do Turno", type="primary", use_container_width=True)
+            btn_concluir_turno = st.form_submit_button("🏁 Concluir Fechamento do Turno", type="primary", use_container_width=True)
 
-        if btn_concluir_turno:
-            k_ini_parsed = converter_km(txt_kmi)
-            k_fim_parsed = converter_km(txt_kmf)
+            if btn_concluir_turno:
+                k_fim_parsed = converter_km_inteiro(txt_kmf)
 
-            if k_fim_parsed is not None and k_ini_parsed is not None:
-                if k_fim_parsed < k_ini_parsed:
-                    st.error("O KM final não pode ser menor que o KM inicial.")
-                    st.stop()
-                k_rod_calc = k_fim_parsed - k_ini_parsed
-            else:
-                k_rod_calc = None
+                if k_fim_parsed is not None:
+                    if k_fim_parsed < km_ini_gravado:
+                        st.error(f"O KM final ({k_fim_parsed:,}) não pode ser menor que o KM inicial ({km_ini_gravado:,}).".replace(",", "."))
+                        st.stop()
+                    k_rod_calc = k_fim_parsed - km_ini_gravado
+                else:
+                    k_rod_calc = km_rod_gravado
 
-            itens_para_gravar = []
-            mapa_receitas = [
-                ("Uber sem pedágios", v_uber),
-                ("99 com pedágios", v_99),
-                ("Pedágio Uber", v_ped_uber),
-                ("Particular", v_part),
-            ]
-            for cat, campo in mapa_receitas:
-                val = converter_valor(campo)
-                if val > 0:
-                    itens_para_gravar.append({"tipo": "Receita", "categoria": cat, "descricao": "", "valor": val})
+                itens_para_gravar = []
+                mapa_receitas = [
+                    ("Uber sem pedágios", v_uber),
+                    ("99 com pedágios", v_99),
+                    ("Pedágio Uber", v_ped_uber),
+                    ("Particular", v_part),
+                ]
+                for cat, campo in mapa_receitas:
+                    val = converter_valor(campo)
+                    if val > 0:
+                        itens_para_gravar.append({"tipo": "Receita", "categoria": cat, "descricao": "", "valor": val})
 
-            mapa_despesas = [
-                ("Combustível", v_combustivel, ""),
-                ("SemParar do dia", v_semparar, ""),
-                ("Lavagem", v_lavagem, ""),
-            ]
-            for cat, campo, obs in mapa_despesas:
-                val = converter_valor(campo)
-                if val > 0:
-                    itens_para_gravar.append({"tipo": "Despesa", "categoria": cat, "descricao": obs, "valor": val})
+                mapa_despesas = [
+                    ("Combustível", v_combustivel, ""),
+                    ("SemParar do dia", v_semparar, ""),
+                    ("Lavagem", v_lavagem, ""),
+                ]
+                for cat, campo, obs in mapa_despesas:
+                    val = converter_valor(campo)
+                    if val > 0:
+                        itens_para_gravar.append({"tipo": "Despesa", "categoria": cat, "descricao": obs, "valor": val})
 
-            val_outra = converter_valor(v_outra_desp)
-            if val_outra > 0:
-                itens_para_gravar.append({"tipo": "Despesa", "categoria": "Outro", "descricao": desc_outra_desp.strip(), "valor": val_outra})
+                val_outra = converter_valor(v_outra_desp)
+                if val_outra > 0:
+                    itens_para_gravar.append({"tipo": "Despesa", "categoria": "Outro", "descricao": desc_outra_desp.strip(), "valor": val_outra})
 
-            if not itens_para_gravar and k_rod_calc is None:
-                st.warning("Preencha ao menos a quilometragem ou um valor financeiro.")
-            else:
-                salvar_fechamento_turno(data_atual, k_ini_parsed, k_fim_parsed, k_rod_calc, itens_para_gravar)
-                st.session_state["msg_sucesso"] = f"Turno de {data_atual.strftime('%d/%m/%Y')} fechado com sucesso!"
-                st.rerun()
+                if not itens_para_gravar and k_fim_parsed is None:
+                    st.warning("Preencha ao menos o KM final ou um lançamento financeiro.")
+                else:
+                    salvar_fechamento_turno(data_atual, km_ini_gravado, k_fim_parsed, k_rod_calc, itens_para_gravar)
+                    msg_rodados = f" | {k_rod_calc} km rodados" if k_rod_calc is not None else ""
+                    st.session_state["msg_sucesso"] = f"Turno de {data_atual.strftime('%d/%m/%Y')} fechado com sucesso!{msg_rodados}"
+                    st.rerun()
 
 # ==========================================
 # ABA 2: GERENCIAR REGISTROS
@@ -635,7 +678,6 @@ else:
     else:
         d_inicio, d_fim = min_base, max_base
 
-# Filtro com verificação de dataframe vazio
 if not df_completo.empty:
     df_f = df_completo[(df_completo["data"].dt.date >= d_inicio) & (df_completo["data"].dt.date <= d_fim)].copy()
 else:
@@ -651,7 +693,7 @@ tot_desp = df_f[df_f["tipo"] == "Despesa"]["valor"].sum() if not df_f.empty else
 lucro = tot_rec - tot_desp
 margem = (lucro / tot_rec * 100) if tot_rec > 0 else 0.0
 
-tot_km = df_km_f["km_rodado"].dropna().sum() if not df_km_f.empty else 0.0
+tot_km = int(round(df_km_f["km_rodado"].dropna().sum())) if not df_km_f.empty else 0
 rec_km = (tot_rec / tot_km) if tot_km > 0 else 0.0
 custo_km = (tot_desp / tot_km) if tot_km > 0 else 0.0
 lucro_km = (lucro / tot_km) if tot_km > 0 else 0.0
@@ -662,9 +704,9 @@ k1.metric("Faturamento Bruto", formata_real(tot_rec))
 k2.metric("Despesas Totais", formata_real(tot_desp))
 k3.metric("Lucro Líquido", formata_real(lucro), delta=f"{margem:.1f}% margem")
 
-# 2. CARDS DE EFICIÊNCIA DE QUILOMETRAGEM
+# 2. CARDS DE EFICIÊNCIA DE QUILOMETRAGEM (NÚMEROS INTEIROS)
 m1, m2, m3, m4 = st.columns(4)
-m1.metric("🚗 KM Rodados", f"{tot_km:.1f} km" if tot_km > 0 else "0 km")
+m1.metric("🚗 KM Rodados", formata_km(tot_km))
 m2.metric("💰 R$/KM Faturado", formata_real(rec_km))
 m3.metric("⛽ Custo/KM", formata_real(custo_km))
 m4.metric("📈 Lucro Líquido/KM", formata_real(lucro_km))
@@ -741,7 +783,7 @@ if not df_f.empty:
                 use_container_width=True
             )
 else:
-    st.info("Nenhum lançamento no período selecionado.")
+    st.info("Nenhum lançamento financeiro no período selecionado.")
 
 # --- GRÁFICOS: PIZZAS PRIMEIRO, BARRAS NO FINAL ---
 if not df_f.empty:
