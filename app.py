@@ -19,7 +19,7 @@ FUSO_SP = ZoneInfo("America/Sao_Paulo")
 def obter_data_hoje():
     return datetime.now(FUSO_SP).date()
 
-# Estilização visual moderna e compacta para telemóvel / mobile
+# Estilização visual moderna e compacta para celular
 st.markdown("""
 <style>
     div[data-testid="stMetricValue"] > div {
@@ -59,12 +59,12 @@ def get_db_engine():
 
 engine = get_db_engine()
 
-# --- SISTEMA DE AUTENTICAÇÃO MULTI-UTILIZADOR VIA BASE DE DADOS ---
+# --- SISTEMA DE AUTENTICAÇÃO COM PRIMEIRO ACESSO OBRIGATÓRIO ---
 def autenticar_usuario_db(email_digitado, senha_digitada):
     try:
         with engine.connect() as conn:
             query = text("""
-                SELECT id, email, nome, ativo 
+                SELECT id, email, nome, ativo, COALESCE(primeiro_acesso, FALSE) AS primeiro_acesso
                 FROM usuarios 
                 WHERE LOWER(email) = LOWER(:email) 
                   AND (
@@ -83,17 +83,31 @@ def autenticar_usuario_db(email_digitado, senha_digitada):
                     "id": result[0],
                     "email": result[1],
                     "nome": result[2],
-                    "ativo": bool(result[3])
+                    "ativo": bool(result[3]),
+                    "primeiro_acesso": bool(result[4])
                 }
             return None
     except Exception as e:
         st.error(f"Erro ao verificar credenciais: {str(e)}")
         return None
 
+def atualizar_senha_primeiro_acesso(user_id, nova_senha):
+    try:
+        with engine.begin() as conn:
+            up_query = text("""
+                UPDATE usuarios 
+                SET senha_hash = crypt(:nova_senha, gen_salt('bf')),
+                    primeiro_acesso = FALSE
+                WHERE id = :uid;
+            """)
+            conn.execute(up_query, {"uid": user_id, "nova_senha": nova_senha})
+            return True, "Senha cadastrada com sucesso!"
+    except Exception as e:
+        return False, f"Erro ao definir nova senha: {str(e)}"
+
 def atualizar_senha_usuario(user_id, senha_atual, nova_senha):
     try:
         with engine.begin() as conn:
-            # 1. Verifica se a senha atual está correta
             check_query = text("""
                 SELECT id FROM usuarios 
                 WHERE id = :uid 
@@ -106,10 +120,10 @@ def atualizar_senha_usuario(user_id, senha_atual, nova_senha):
             if not valido:
                 return False, "A senha atual informada está incorreta."
 
-            # 2. Atualiza para a nova senha com hash forte
             up_query = text("""
                 UPDATE usuarios 
-                SET senha_hash = crypt(:nova_senha, gen_salt('bf'))
+                SET senha_hash = crypt(:nova_senha, gen_salt('bf')),
+                    primeiro_acesso = FALSE
                 WHERE id = :uid;
             """)
             conn.execute(up_query, {"uid": user_id, "nova_senha": nova_senha})
@@ -154,17 +168,48 @@ def verificar_login():
 if not verificar_login():
     st.stop()
 
-# Dados do utilizador logado
+# Dados do usuário logado
 usuario_atual = st.session_state["usuario_logado"]
 USUARIO_ID = usuario_atual["id"]
 NOME_EXIBICAO = usuario_atual["nome"] if usuario_atual["nome"] else usuario_atual["email"]
 
-# Modal de Alteração de Senha
+# --- BLOQUEIO E TELA OBRIGATÓRIA DE PRIMEIRO ACESSO ---
+if usuario_atual.get("primeiro_acesso", False):
+    col_v1, col_centro, col_v2 = st.columns([1, 2.5, 1])
+    with col_centro:
+        st.markdown("<div style='height: 30px;'></div>", unsafe_allow_html=True)
+        st.markdown("### 🛡️ Defina sua Senha Pessoal")
+        st.info("👋 Olá! Este é o seu primeiro acesso. Por segurança, crie uma senha definitiva antes de começar a usar o aplicativo.")
+
+        with st.form("form_primeiro_acesso"):
+            nova_senha_pa = st.text_input("Nova Senha:", type="password", placeholder="Mínimo 6 caracteres")
+            conf_senha_pa = st.text_input("Confirme a Nova Senha:", type="password", placeholder="Repita a nova senha")
+            btn_salvar_pa = st.form_submit_button("💾 Salvar Senha e Liberar Acesso", type="primary", use_container_width=True)
+
+            if btn_salvar_pa:
+                if not nova_senha_pa or not conf_senha_pa:
+                    st.error("Preencha todos os campos.")
+                elif len(nova_senha_pa) < 6:
+                    st.error("A nova senha deve ter no mínimo 6 caracteres.")
+                elif nova_senha_pa != conf_senha_pa:
+                    st.error("As senhas digitadas não coincidem.")
+                else:
+                    sucesso, msg = atualizar_senha_primeiro_acesso(USUARIO_ID, nova_senha_pa)
+                    if sucesso:
+                        usuario_atual["primeiro_acesso"] = False
+                        st.session_state["usuario_logado"] = usuario_atual
+                        st.session_state["msg_sucesso"] = "Senha definida com sucesso! Bem-vindo ao painel."
+                        st.rerun()
+                    else:
+                        st.error(msg)
+    st.stop()
+
+# Modal de Alteração de Senha Voluntária
 @st.dialog("🔑 Alterar Palavra-passe")
 def modal_alterar_senha(user_id):
     st.write("Crie uma nova senha de acesso segura para a sua conta.")
     with st.form("form_mudar_senha"):
-        s_atual = st.text_input("Palavra-passe Atual:", type="password", placeholder="Ex: 123456")
+        s_atual = st.text_input("Palavra-passe Atual:", type="password", placeholder="Sua senha atual")
         s_nova = st.text_input("Nova Palavra-passe:", type="password", placeholder="No mínimo 6 caracteres")
         s_conf = st.text_input("Confirme a Nova Palavra-passe:", type="password", placeholder="Repita a nova senha")
         
@@ -251,7 +296,7 @@ def converter_km_inteiro(texto):
     except ValueError:
         return None
 
-# Operações de Base de Dados com Filtro por Utilizador
+# Operações de Base de Dados com Filtro por Usuário
 @st.cache_data(ttl=600)
 def carregar_dados(user_id):
     with engine.connect() as conn:
@@ -433,7 +478,7 @@ def gerar_dossie_ia(df_periodo, df_km_periodo, d_ini, d_end):
 
     return "\n".join(prompt_linhas)
 
-# Carregamento filtrado pelo utilizador atual
+# Carregamento filtrado pelo usuário logado
 df_completo = carregar_dados(USUARIO_ID)
 df_turnos_km = carregar_turnos_km(USUARIO_ID)
 
@@ -450,7 +495,7 @@ if "date_ver" not in st.session_state:
 # Modal de Edição de Turno
 @st.dialog("✏️ Editar Turno de KM")
 def modal_editar_turno(turno_id, km_ini_atual, km_fim_atual):
-    st.write(f"Editar Odómetros do **Turno #{turno_id}**:")
+    st.write(f"Editar Odômetros do **Turno #{turno_id}**:")
     txt_ini = st.text_input("KM Inicial:", value=str(int(km_ini_atual)) if km_ini_atual else "")
     txt_fim = st.text_input("KM Final (opcional):", value=str(int(km_fim_atual)) if km_fim_atual else "")
     
@@ -606,7 +651,7 @@ with tab_operacao:
     data_atual = st.session_state["data_operacao"]
     st.caption(f"🗓️ A gerir o dia: **{data_atual.strftime('%d/%m/%Y')}** ({DIAS_SEMANA_PT[data_atual.weekday()]})")
 
-    # Filtra turnos e lançamentos do dia selecionado
+    # Filtra turnos e lançamentos do dia
     turnos_do_dia = df_turnos_km[df_turnos_km["data"].dt.date == data_atual].sort_values("id") if not df_turnos_km.empty else pd.DataFrame()
     turno_aberto = turnos_do_dia[turnos_do_dia["km_final"].isnull()] if not turnos_do_dia.empty else pd.DataFrame()
     tem_turno_aberto = not turno_aberto.empty
@@ -653,7 +698,7 @@ with tab_operacao:
         with st.form("form_fechar_turno"):
             c_kf, c_btnf = st.columns([2, 1])
             with c_kf:
-                input_km_fim = st.text_input("Odómetro ao encerrar este turno:", placeholder=f"Ex: {km_ini_ativo + 80}")
+                input_km_fim = st.text_input("Odômetro ao encerrar este turno:", placeholder=f"Ex: {km_ini_ativo + 80}")
             with c_btnf:
                 st.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
                 btn_fechar_t = st.form_submit_button("🏁 Pausar / Fechar Turno", type="primary", use_container_width=True)
@@ -675,7 +720,7 @@ with tab_operacao:
             with c_ki:
                 ultimo_km = int(turnos_do_dia["km_final"].dropna().iloc[-1]) if not turnos_do_dia.empty and not turnos_do_dia["km_final"].dropna().empty else ""
                 placeholder_sug = f"Ex: {ultimo_km}" if ultimo_km else "Ex: 85420"
-                input_km_ini = st.text_input("Odómetro ao começar este turno:", value=str(ultimo_km) if ultimo_km else "", placeholder=placeholder_sug)
+                input_km_ini = st.text_input("Odômetro ao começar este turno:", value=str(ultimo_km) if ultimo_km else "", placeholder=placeholder_sug)
             with c_btni:
                 st.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
                 btn_abrir_t = st.form_submit_button("🟢 Iniciar Novo Turno", type="primary", use_container_width=True)
