@@ -118,7 +118,7 @@ def converter_valor(texto):
     except ValueError:
         return -1.0
 
-# Conexão com o Supabase via Secrets do Streamlit Cloud
+# Conexão blindada com o Supabase via Secrets do Streamlit Cloud
 raw_url = st.secrets["database"]["url"]
 
 if raw_url.startswith("postgresql://"):
@@ -403,7 +403,7 @@ with tab_gerenciar:
 
 st.markdown("---")
 
-# --- RELATÓRIOS E ANÁLISES GLOBAIS ---
+# --- RELATÓRIOS E ANÁLISES GLOBAIS COM NOVOS PERÍODOS ---
 df = carregar_dados()
 
 if df.empty:
@@ -411,16 +411,36 @@ if df.empty:
 else:
     st.subheader("📊 Relatórios e Indicadores")
 
-    opcoes_periodo = ["Diário", "Semanal", "Mensal", "Anual", "Tudo", "Personalizado"]
+    opcoes_periodo = [
+        "Hoje", 
+        "Ontem", 
+        "Últimos 7 dias", 
+        "Últimos 30 dias", 
+        "Semanal", 
+        "Mensal", 
+        "Anual", 
+        "Tudo", 
+        "Personalizado"
+    ]
+    
     if hasattr(st, "pills"):
-        periodo_selecionado = st.pills("Período de Análise:", opcoes_periodo, default="Diário")
+        periodo_selecionado = st.pills("Período de Análise:", opcoes_periodo, default="Hoje")
     else:
         periodo_selecionado = st.radio("Período de Análise:", opcoes_periodo, horizontal=True)
 
     hoje = obter_data_hoje()
 
-    if periodo_selecionado == "Diário":
+    if periodo_selecionado == "Hoje":
         d_inicio = hoje
+        d_fim = hoje
+    elif periodo_selecionado == "Ontem":
+        d_inicio = hoje - timedelta(days=1)
+        d_fim = hoje - timedelta(days=1)
+    elif periodo_selecionado == "Últimos 7 dias":
+        d_inicio = hoje - timedelta(days=6)
+        d_fim = hoje
+    elif periodo_selecionado == "Últimos 30 dias":
+        d_inicio = hoje - timedelta(days=29)
         d_fim = hoje
     elif periodo_selecionado == "Semanal":
         d_inicio = hoje - timedelta(days=hoje.weekday())
@@ -560,7 +580,7 @@ else:
             st.download_button(
                 label="📥 Baixar Dados da Tabela Filtrada (CSV)",
                 data=csv_data,
-                file_name=f"financeiro_{periodo_selecionado.lower()}_filtrado.csv",
+                file_name=f"financeiro_{periodo_selecionado.lower().replace(' ', '_')}_filtrado.csv",
                 mime="text/csv",
                 use_container_width=True
             )
