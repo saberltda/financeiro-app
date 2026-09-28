@@ -129,13 +129,19 @@ elif raw_url.startswith("postgres://"):
 if "sslmode" not in raw_url:
     raw_url += "?sslmode=require" if "?" not in raw_url else "&sslmode=require"
 
-engine = create_engine(
-    raw_url,
-    pool_pre_ping=True,
-    pool_recycle=300
-)
+# Otimização do pool com pre_ping e recycle
+@st.cache_resource
+def get_db_engine():
+    return create_engine(
+        raw_url,
+        pool_pre_ping=True,
+        pool_recycle=300
+    )
 
-def init_db():
+engine = get_db_engine()
+
+# Inicialização executada apenas 1 vez por ciclo do aplicativo
+if "db_inicializado" not in st.session_state:
     try:
         with engine.begin() as conn:
             conn.execute(text('''
@@ -148,9 +154,20 @@ def init_db():
                     valor NUMERIC(10, 2) NOT NULL
                 );
             '''))
+        st.session_state["db_inicializado"] = True
     except Exception as e:
         st.error(f"Erro de conexão com o banco de dados: {str(e)}")
         st.stop()
+
+# Cache de alta velocidade para leitura dos dados (evita idas ao Supabase a cada clique)
+@st.cache_data(ttl=600)
+def carregar_dados():
+    with engine.connect() as conn:
+        df = pd.read_sql_query(text("SELECT * FROM lancamentos ORDER BY data DESC, id DESC"), conn)
+    if not df.empty:
+        df["data"] = pd.to_datetime(df["data"])
+        df["valor"] = df["valor"].astype(float)
+    return df
 
 def inserir_registro(data_reg, tipo, categoria, descricao, valor):
     with engine.begin() as conn:
@@ -161,6 +178,7 @@ def inserir_registro(data_reg, tipo, categoria, descricao, valor):
             '''),
             {"data": data_reg, "tipo": tipo, "categoria": categoria, "descricao": descricao, "valor": valor}
         )
+    carregar_dados.clear()
 
 def atualizar_registro(id_reg, data_reg, tipo, categoria, descricao, valor):
     with engine.begin() as conn:
@@ -172,21 +190,14 @@ def atualizar_registro(id_reg, data_reg, tipo, categoria, descricao, valor):
             '''),
             {"data": data_reg, "tipo": tipo, "categoria": categoria, "descricao": descricao, "valor": valor, "id": id_reg}
         )
+    carregar_dados.clear()
 
 def deletar_registro(id_reg):
     with engine.begin() as conn:
         conn.execute(text('DELETE FROM lancamentos WHERE id = :id'), {"id": id_reg})
+    carregar_dados.clear()
 
-def carregar_dados():
-    with engine.connect() as conn:
-        df = pd.read_sql_query(text("SELECT * FROM lancamentos ORDER BY data DESC, id DESC"), conn)
-    if not df.empty:
-        df["data"] = pd.to_datetime(df["data"])
-        df["valor"] = df["valor"].astype(float)
-    return df
-
-init_db()
-
+# Carregamento único
 df_completo = carregar_dados()
 
 # Notificação temporária de sucesso
@@ -403,8 +414,8 @@ with tab_gerenciar:
 
 st.markdown("---")
 
-# --- RELATÓRIOS E ANÁLISES GLOBAIS COM NOVOS PERÍODOS ---
-df = carregar_dados()
+# --- RELATÓRIOS E ANÁLISES GLOBAIS ---
+df = df_completo
 
 if df.empty:
     st.info("Insira lançamentos acima para visualizar os relatórios e gráficos.")
