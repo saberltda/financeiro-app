@@ -60,40 +60,52 @@ def get_db_engine():
 
 engine = get_db_engine()
 
-# --- PONTE JAVASCRIPT: PERSISTÊNCIA VIA LOCALSTORAGE ---
-def js_sincronizar_sessao(token=None, acao="restaurar"):
-    if acao == "salvar" and token:
-        components.html(f"""
-        <script>
-            try {{
-                window.parent.localStorage.setItem('cmp_auth_token', '{token}');
-            }} catch(e) {{}}
-        </script>
-        """, height=0, width=0)
-    elif acao == "limpar":
-        components.html("""
-        <script>
-            try {
-                window.parent.localStorage.removeItem('cmp_auth_token');
-                const url = new URL(window.parent.location.href);
-                url.searchParams.delete('auth');
-                window.parent.history.replaceState({}, '', url);
-            } catch(e) {}
-        </script>
-        """, height=0, width=0)
-    elif acao == "restaurar":
-        components.html("""
-        <script>
-            try {
-                const token = window.parent.localStorage.getItem('cmp_auth_token');
-                const url = new URL(window.parent.location.href);
-                if (token && !url.searchParams.has('auth')) {
-                    url.searchParams.set('auth', token);
-                    window.parent.location.href = url.href;
+# --- COMPONENTE BIDIRECIONAL DE ARMAZENAMENTO LOCAL ---
+# Comunica diretamente com o Streamlit enviando o token armazenado no aparelho
+_componente_storage = components.declare_component(
+    "armazenamento_local_token",
+    html="""
+    <!DOCTYPE html>
+    <html>
+    <head>
+    <script>
+        function sendValue(value) {
+            window.parent.postMessage({
+                isStreamlitMessage: true,
+                type: "streamlit:setComponentValue",
+                value: value
+            }, "*");
+        }
+
+        window.addEventListener("message", function(event) {
+            if (event.data.type === "streamlit:render") {
+                const args = event.data.args;
+                const acao = args.acao;
+                const token = args.token;
+
+                if (acao === "salvar" && token) {
+                    try { localStorage.setItem("cmp_motorista_token", token); } catch(e){}
+                    sendValue(token);
+                } else if (acao === "limpar") {
+                    try { localStorage.removeItem("cmp_motorista_token"); } catch(e){}
+                    sendValue("");
+                } else if (acao === "obter") {
+                    let salvo = "";
+                    try { salvo = localStorage.getItem("cmp_motorista_token") || ""; } catch(e){}
+                    sendValue(salvo);
                 }
-            } catch(e) {}
-        </script>
-        """, height=0, width=0)
+            }
+        });
+        window.parent.postMessage({isStreamlitMessage: true, type: "streamlit:componentReady", apiVersion: 1}, "*");
+    </script>
+    </head>
+    <body></body>
+    </html>
+    """
+)
+
+def gerenciar_token_navegador(acao="obter", token=None, key="storage_token"):
+    return _componente_storage(acao=acao, token=token, default=None, key=key)
 
 # --- SISTEMA DE AUTENTICAÇÃO COM SESSÃO PERSISTENTE (90 DIAS / 3 MESES) ---
 def gerar_novo_token_sessao(user_id):
@@ -222,26 +234,14 @@ def verificar_login():
     if "usuario_logado" not in st.session_state:
         st.session_state["usuario_logado"] = None
 
-    token_url = st.query_params.get("auth")
-    
-    # Se há token na URL, valida no banco
-    if token_url:
-        usuario_token = buscar_usuario_por_token(token_url)
-        if usuario_token:
-            if usuario_token["ativo"]:
-                st.session_state["usuario_logado"] = usuario_token
-                # Mantém o localStorage sincronizado
-                js_sincronizar_sessao(token_url, acao="salvar")
-            else:
-                st.query_params.clear()
-                js_sincronizar_sessao(acao="limpar")
-        else:
-            st.query_params.clear()
-            js_sincronizar_sessao(acao="limpar")
-    else:
-        # Se não há token na URL nem na sessão, executa script para resgatar do localStorage
-        if st.session_state["usuario_logado"] is None:
-            js_sincronizar_sessao(acao="restaurar")
+    # Tenta restaurar do armazenamento local do aparelho
+    if st.session_state["usuario_logado"] is None:
+        token_armazenado = gerenciar_token_navegador(acao="obter", key="restaurar_sessao_init")
+        if token_armazenado:
+            user_encontrado = buscar_usuario_por_token(token_armazenado)
+            if user_encontrado and user_encontrado["ativo"]:
+                st.session_state["usuario_logado"] = user_encontrado
+                st.rerun()
 
     if st.session_state["usuario_logado"] is not None:
         return True
@@ -267,10 +267,10 @@ def verificar_login():
                             st.error("⛔ A sua subscrição está inativa ou cancelada. Regularize o acesso para continuar.")
                         else:
                             st.session_state["usuario_logado"] = dados_user
+                            # Gera o token de 90 dias e salva no armazenamento permanente do aparelho
                             token_gerado = gerar_novo_token_sessao(dados_user["id"])
                             if token_gerado:
-                                st.query_params["auth"] = token_gerado
-                                js_sincronizar_sessao(token_gerado, acao="salvar")
+                                gerenciar_token_navegador(acao="salvar", token=token_gerado, key="salvar_token_login")
                             st.rerun()
                     else:
                         st.error("E-mail ou palavra-passe incorretos. Verifique suas credenciais.")
@@ -355,8 +355,7 @@ with c_sair:
     st.markdown("<div style='height: 18px;'></div>", unsafe_allow_html=True)
     if st.button("🚪 Sair", use_container_width=True):
         revogar_token_sessao(USUARIO_ID)
-        js_sincronizar_sessao(acao="limpar")
-        st.query_params.clear()
+        gerenciar_token_navegador(acao="limpar", key="limpar_token_logout")
         st.session_state["usuario_logado"] = None
         st.rerun()
 
