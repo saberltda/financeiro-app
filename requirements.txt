@@ -1,6 +1,6 @@
 streamlit
 pandas
 plotly
-SQLAlchemy
+sqlalchemy
 psycopg[binary]
-psycopg2-binary
+extra-streamlit-components
