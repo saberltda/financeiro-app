@@ -158,7 +158,7 @@ def get_db_engine():
 
 engine = get_db_engine()
 
-# Inicialização de tabelas (Suporte a múltiplos turnos por ID incremental)
+# Inicialização e Migração Automática de Tabelas
 if "db_inicializado" not in st.session_state:
     try:
         with engine.begin() as conn:
@@ -172,16 +172,32 @@ if "db_inicializado" not in st.session_state:
                     valor NUMERIC(10, 2) NOT NULL
                 );
             '''))
-            # Recria ou ajusta a tabela de turnos para suportar múltiplos turnos por dia
+            
+            # Cria a tabela de turnos caso ainda não exista
             conn.execute(text('''
                 CREATE TABLE IF NOT EXISTS turnos_km (
-                    id SERIAL PRIMARY KEY,
                     data DATE NOT NULL,
-                    km_inicial INTEGER NOT NULL,
+                    km_inicial INTEGER,
                     km_final INTEGER,
-                    km_rodado INTEGER,
-                    horario_inicio TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    km_rodado INTEGER
                 );
+            '''))
+            
+            # Migração: adiciona coluna id se a tabela já existia sem ela
+            conn.execute(text('''
+                ALTER TABLE turnos_km ADD COLUMN IF NOT EXISTS id SERIAL;
+            '''))
+            # Remove a restrição antiga de data única para permitir múltiplos turnos no mesmo dia
+            conn.execute(text('''
+                DO $$
+                BEGIN
+                    IF EXISTS (
+                        SELECT 1 FROM pg_constraint 
+                        WHERE conname = 'turnos_km_pkey'
+                    ) THEN
+                        ALTER TABLE turnos_km DROP CONSTRAINT turnos_km_pkey;
+                    END IF;
+                END $$;
             '''))
         st.session_state["db_inicializado"] = True
     except Exception as e:
@@ -268,7 +284,8 @@ def atualizar_registro(id_reg, data_reg, tipo, categoria, descricao, valor):
             UPDATE lancamentos
             SET data = :data, tipo = :tipo, categoria = :categoria, descricao = :descricao, valor = :valor
             WHERE id = :id
-        '''), {"data": data_reg, "tipo": tipo, "categoria": categoria, "descricao": descricao, "valor": valor, "id": id_reg})
+        '''), {"data": data_reg, "tipo": tipo, "categoria": categoria, "descricao": descricao, "valor": valor, "id": id_reg}
+        )
     carregar_dados.clear()
 
 def deletar_registro(id_reg):
@@ -520,7 +537,6 @@ with tab_operacao:
         with st.form("form_abrir_turno"):
             c_ki, c_btni = st.columns([2, 1])
             with c_ki:
-                # Sugere o último KM gravado se houver
                 ultimo_km = int(turnos_do_dia["km_final"].dropna().iloc[-1]) if not turnos_do_dia.empty and not turnos_do_dia["km_final"].dropna().empty else ""
                 placeholder_sug = f"Ex: {ultimo_km}" if ultimo_km else "Ex: 85420"
                 input_km_ini = st.text_input("Odômetro ao começar este turno:", value=str(ultimo_km) if ultimo_km else "", placeholder=placeholder_sug)
@@ -542,7 +558,6 @@ with tab_operacao:
     st.markdown("#### 💵 Lançamentos Parciais (Ganhos & Despesas na Hora)")
     st.caption("Abasteceu, lavou o carro ou recebeu uma corrida? Lance aqui individualmente a qualquer momento do dia.")
 
-    # Seletores fora do form para atualização em tempo real
     col_sel_tipo, col_sel_cat = st.columns(2)
     with col_sel_tipo:
         tipo_avulso = st.radio("Tipo:", ["Despesa (Custos)", "Receita (Ganhos)"], horizontal=True, key="rad_tipo_avulso")
