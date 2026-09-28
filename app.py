@@ -5,7 +5,6 @@ from zoneinfo import ZoneInfo
 import plotly.express as px
 from sqlalchemy import create_engine, text
 import streamlit.components.v1 as components
-import hmac
 
 st.set_page_config(
     page_title="Controle Motorista Pro", 
@@ -44,51 +43,101 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# --- SISTEMA DE AUTENTICAÇÃO ---
-def verificar_login():
-    if "autenticado" not in st.session_state:
-        st.session_state["autenticado"] = False
+# Conexão blindada com o Supabase
+raw_url = st.secrets["database"]["url"]
+if raw_url.startswith("postgresql://"):
+    raw_url = raw_url.replace("postgresql://", "postgresql+psycopg://", 1)
+elif raw_url.startswith("postgres://"):
+    raw_url = raw_url.replace("postgres://", "postgresql+psycopg://", 1)
 
-    if st.session_state["autenticado"]:
+if "sslmode" not in raw_url:
+    raw_url += "?sslmode=require" if "?" not in raw_url else "&sslmode=require"
+
+@st.cache_resource
+def get_db_engine():
+    return create_engine(raw_url, pool_pre_ping=True, pool_recycle=300)
+
+engine = get_db_engine()
+
+# --- SISTEMA DE AUTENTICAÇÃO MULTIUSUÁRIO VIA BANCO DE DADOS ---
+def autenticar_usuario_db(email_digitado, senha_digitada):
+    try:
+        with engine.connect() as conn:
+            query = text("""
+                SELECT id, email, nome, ativo 
+                FROM usuarios 
+                WHERE LOWER(email) = LOWER(:email) 
+                  AND senha_hash = crypt(:senha, senha_hash)
+                LIMIT 1;
+            """)
+            result = conn.execute(query, {
+                "email": email_digitado.strip(),
+                "senha": senha_digitada
+            }).fetchone()
+            
+            if result:
+                return {
+                    "id": result[0],
+                    "email": result[1],
+                    "nome": result[2],
+                    "ativo": bool(result[3])
+                }
+            return None
+    except Exception as e:
+        st.error(f"Erro ao verificar credenciais: {str(e)}")
+        return None
+
+def verificar_login():
+    if "usuario_logado" not in st.session_state:
+        st.session_state["usuario_logado"] = None
+
+    if st.session_state["usuario_logado"] is not None:
         return True
 
     col_vazia1, col_centro, col_vazia2 = st.columns([1, 2.5, 1])
     with col_centro:
         st.markdown("<div style='height: 40px;'></div>", unsafe_allow_html=True)
-        st.markdown("### 🔒 Acesso Restrito")
-        st.caption("Digite suas credenciais para acessar o painel operacional.")
+        st.markdown("### 🔒 Acesso ao Sistema")
+        st.caption("Entre com seu e-mail e senha cadastrados para acessar o seu painel.")
 
         with st.form("form_login"):
-            usuario_input = st.text_input("Usuário", placeholder="Ex: admin").strip()
+            email_input = st.text_input("E-mail", placeholder="seu_email@exemplo.com").strip().lower()
             senha_input = st.text_input("Senha", type="password", placeholder="••••••••")
             btn_entrar = st.form_submit_button("🔓 Entrar", use_container_width=True, type="primary")
 
             if btn_entrar:
-                user_correto = st.secrets["auth"]["username"]
-                senha_correta = st.secrets["auth"]["password"]
-
-                valida_user = hmac.compare_digest(usuario_input, user_correto)
-                valida_senha = hmac.compare_digest(senha_input, senha_correta)
-
-                if valida_user and valida_senha:
-                    st.session_state["autenticado"] = True
-                    st.rerun()
+                if not email_input or not senha_input:
+                    st.error("Por favor, preencha o e-mail e a senha.")
                 else:
-                    st.error("Usuário ou senha incorretos.")
+                    dados_user = autenticar_usuario_db(email_input, senha_input)
+                    if dados_user:
+                        if not dados_user["ativo"]:
+                            st.error("⛔ Sua assinatura está inativa ou cancelada. Regularize seu acesso para continuar.")
+                        else:
+                            st.session_state["usuario_logado"] = dados_user
+                            st.rerun()
+                    else:
+                        st.error("E-mail ou senha incorretos. Verifique suas credenciais.")
 
     return False
 
 if not verificar_login():
     st.stop()
 
-# --- BARRA SUPERIOR COM LOGOUT ---
-c_titulo, c_sair = st.columns([4, 1.2])
+# Dados do usuário logado
+usuario_atual = st.session_state["usuario_logado"]
+USUARIO_ID = usuario_atual["id"]
+NOME_EXIBICAO = usuario_atual["nome"] if usuario_atual["nome"] else usuario_atual["email"]
+
+# --- BARRA SUPERIOR COM IDENTIFICAÇÃO E LOGOUT ---
+c_titulo, c_sair = st.columns([4, 1.4])
 with c_titulo:
     st.title("🚗 Gestão de Turnos & Finanças")
+    st.caption(f"👤 Conectado como: **{NOME_EXIBICAO}**")
 with c_sair:
     st.markdown("<div style='height: 18px;'></div>", unsafe_allow_html=True)
-    if st.button("🚪 Sair", use_container_width=True):
-        st.session_state["autenticado"] = False
+    if st.button("🚪 Sair da Conta", use_container_width=True):
+        st.session_state["usuario_logado"] = None
         st.rerun()
 
 # Nomenclaturas fixas
@@ -142,68 +191,15 @@ def converter_km_inteiro(texto):
     except ValueError:
         return None
 
-# Conexão com Supabase
-raw_url = st.secrets["database"]["url"]
-if raw_url.startswith("postgresql://"):
-    raw_url = raw_url.replace("postgresql://", "postgresql+psycopg://", 1)
-elif raw_url.startswith("postgres://"):
-    raw_url = raw_url.replace("postgres://", "postgresql+psycopg://", 1)
-
-if "sslmode" not in raw_url:
-    raw_url += "?sslmode=require" if "?" not in raw_url else "&sslmode=require"
-
-@st.cache_resource
-def get_db_engine():
-    return create_engine(raw_url, pool_pre_ping=True, pool_recycle=300)
-
-engine = get_db_engine()
-
-# Inicialização e Migração Automática de Tabelas
-if "db_inicializado" not in st.session_state:
-    try:
-        with engine.begin() as conn:
-            conn.execute(text('''
-                CREATE TABLE IF NOT EXISTS lancamentos (
-                    id SERIAL PRIMARY KEY,
-                    data DATE NOT NULL,
-                    tipo TEXT NOT NULL,
-                    categoria TEXT NOT NULL,
-                    descricao TEXT,
-                    valor NUMERIC(10, 2) NOT NULL
-                );
-            '''))
-            conn.execute(text('''
-                CREATE TABLE IF NOT EXISTS turnos_km (
-                    data DATE NOT NULL,
-                    km_inicial INTEGER,
-                    km_final INTEGER,
-                    km_rodado INTEGER
-                );
-            '''))
-            conn.execute(text('''
-                ALTER TABLE turnos_km ADD COLUMN IF NOT EXISTS id SERIAL;
-            '''))
-            conn.execute(text('''
-                DO $$
-                BEGIN
-                    IF EXISTS (
-                        SELECT 1 FROM pg_constraint 
-                        WHERE conname = 'turnos_km_pkey'
-                    ) THEN
-                        ALTER TABLE turnos_km DROP CONSTRAINT turnos_km_pkey;
-                    END IF;
-                END $$;
-            '''))
-        st.session_state["db_inicializado"] = True
-    except Exception as e:
-        st.error(f"Erro de conexão com o banco de dados: {str(e)}")
-        st.stop()
-
-# Operações de Banco de Dados com Cache
+# Operações de Banco de Dados com Filtro por Usuário e Cache
 @st.cache_data(ttl=600)
-def carregar_dados():
+def carregar_dados(user_id):
     with engine.connect() as conn:
-        df = pd.read_sql_query(text("SELECT * FROM lancamentos ORDER BY data DESC, id DESC"), conn)
+        df = pd.read_sql_query(
+            text("SELECT * FROM lancamentos WHERE usuario_id = :uid ORDER BY data DESC, id DESC"), 
+            conn, 
+            params={"uid": user_id}
+        )
     
     if not df.empty:
         df["data"] = pd.to_datetime(df["data"])
@@ -213,15 +209,19 @@ def carregar_dados():
             "99": "99 com pedágios"
         })
     else:
-        df = pd.DataFrame(columns=["id", "data", "tipo", "categoria", "descricao", "valor"])
+        df = pd.DataFrame(columns=["id", "data", "tipo", "categoria", "descricao", "valor", "usuario_id"])
         df["data"] = pd.to_datetime(df["data"])
         df["valor"] = df["valor"].astype(float)
     return df
 
 @st.cache_data(ttl=600)
-def carregar_turnos_km():
+def carregar_turnos_km(user_id):
     with engine.connect() as conn:
-        df_km = pd.read_sql_query(text("SELECT * FROM turnos_km ORDER BY data DESC, id ASC"), conn)
+        df_km = pd.read_sql_query(
+            text("SELECT * FROM turnos_km WHERE usuario_id = :uid ORDER BY data DESC, id ASC"), 
+            conn, 
+            params={"uid": user_id}
+        )
     
     if not df_km.empty:
         df_km["data"] = pd.to_datetime(df_km["data"])
@@ -229,77 +229,78 @@ def carregar_turnos_km():
         df_km["km_final"] = pd.to_numeric(df_km["km_final"], errors="coerce")
         df_km["km_rodado"] = pd.to_numeric(df_km["km_rodado"], errors="coerce")
     else:
-        df_km = pd.DataFrame(columns=["id", "data", "km_inicial", "km_final", "km_rodado"])
+        df_km = pd.DataFrame(columns=["id", "data", "km_inicial", "km_final", "km_rodado", "usuario_id"])
         df_km["data"] = pd.to_datetime(df_km["data"])
     return df_km
 
-def abrir_novo_turno(data_reg, km_ini):
+def abrir_novo_turno(data_reg, km_ini, user_id):
     with engine.begin() as conn:
         conn.execute(text('''
-            INSERT INTO turnos_km (data, km_inicial)
-            VALUES (:data, :km_inicial);
-        '''), {"data": data_reg, "km_inicial": km_ini})
+            INSERT INTO turnos_km (data, km_inicial, usuario_id)
+            VALUES (:data, :km_inicial, :uid);
+        '''), {"data": data_reg, "km_inicial": km_ini, "uid": user_id})
     carregar_turnos_km.clear()
 
-def fechar_turno(turno_id, km_fim, km_rodado):
+def fechar_turno(turno_id, km_fim, km_rodado, user_id):
     with engine.begin() as conn:
         conn.execute(text('''
             UPDATE turnos_km
             SET km_final = :km_fim, km_rodado = :km_rodado
-            WHERE id = :id;
-        '''), {"km_fim": km_fim, "km_rodado": km_rodado, "id": turno_id})
+            WHERE id = :id AND usuario_id = :uid;
+        '''), {"km_fim": km_fim, "km_rodado": km_rodado, "id": turno_id, "uid": user_id})
     carregar_turnos_km.clear()
 
-def editar_turno_banco(turno_id, km_ini, km_fim):
+def editar_turno_banco(turno_id, km_ini, km_fim, user_id):
     km_rod = (km_fim - km_ini) if (km_fim is not None and km_fim >= km_ini) else None
     with engine.begin() as conn:
         conn.execute(text('''
             UPDATE turnos_km
             SET km_inicial = :km_ini, km_final = :km_fim, km_rodado = :km_rod
-            WHERE id = :id;
-        '''), {"km_ini": km_ini, "km_fim": km_fim, "km_rod": km_rod, "id": turno_id})
+            WHERE id = :id AND usuario_id = :uid;
+        '''), {"km_ini": km_ini, "km_fim": km_fim, "km_rod": km_rod, "id": turno_id, "uid": user_id})
     carregar_turnos_km.clear()
 
-def deletar_turno_banco(turno_id):
+def deletar_turno_banco(turno_id, user_id):
     with engine.begin() as conn:
-        conn.execute(text('DELETE FROM turnos_km WHERE id = :id'), {"id": turno_id})
+        conn.execute(text('DELETE FROM turnos_km WHERE id = :id AND usuario_id = :uid'), {"id": turno_id, "uid": user_id})
     carregar_turnos_km.clear()
 
-def inserir_registro_avulso(data_reg, tipo, categoria, descricao, valor):
+def inserir_registro_avulso(data_reg, tipo, categoria, descricao, valor, user_id):
     with engine.begin() as conn:
         conn.execute(text('''
-            INSERT INTO lancamentos (data, tipo, categoria, descricao, valor)
-            VALUES (:data, :tipo, :categoria, :descricao, :valor)
-        '''), {"data": data_reg, "tipo": tipo, "categoria": categoria, "descricao": descricao, "valor": valor})
+            INSERT INTO lancamentos (data, tipo, categoria, descricao, valor, usuario_id)
+            VALUES (:data, :tipo, :categoria, :descricao, :valor, :uid)
+        '''), {"data": data_reg, "tipo": tipo, "categoria": categoria, "descricao": descricao, "valor": valor, "uid": user_id})
     carregar_dados.clear()
 
-def salvar_fechamento_em_lote(data_reg, lista_lancamentos):
+def salvar_fechamento_em_lote(data_reg, lista_lancamentos, user_id):
     with engine.begin() as conn:
         for item in lista_lancamentos:
             conn.execute(text('''
-                INSERT INTO lancamentos (data, tipo, categoria, descricao, valor)
-                VALUES (:data, :tipo, :categoria, :descricao, :valor)
+                INSERT INTO lancamentos (data, tipo, categoria, descricao, valor, usuario_id)
+                VALUES (:data, :tipo, :categoria, :descricao, :valor, :uid)
             '''), {
                 "data": data_reg,
                 "tipo": item["tipo"],
                 "categoria": item["categoria"],
                 "descricao": item["descricao"],
-                "valor": item["valor"]
+                "valor": item["valor"],
+                "uid": user_id
             })
     carregar_dados.clear()
 
-def atualizar_registro(id_reg, data_reg, tipo, categoria, descricao, valor):
+def atualizar_registro(id_reg, data_reg, tipo, categoria, descricao, valor, user_id):
     with engine.begin() as conn:
         conn.execute(text('''
             UPDATE lancamentos
             SET data = :data, tipo = :tipo, categoria = :categoria, descricao = :descricao, valor = :valor
-            WHERE id = :id
-        '''), {"data": data_reg, "tipo": tipo, "categoria": categoria, "descricao": descricao, "valor": valor, "id": id_reg})
+            WHERE id = :id AND usuario_id = :uid
+        '''), {"data": data_reg, "tipo": tipo, "categoria": categoria, "descricao": descricao, "valor": valor, "id": id_reg, "uid": user_id})
     carregar_dados.clear()
 
-def deletar_registro(id_reg):
+def deletar_registro(id_reg, user_id):
     with engine.begin() as conn:
-        conn.execute(text('DELETE FROM lancamentos WHERE id = :id'), {"id": id_reg})
+        conn.execute(text('DELETE FROM lancamentos WHERE id = :id AND usuario_id = :uid'), {"id": id_reg, "uid": user_id})
     carregar_dados.clear()
 
 # Gerador de Dossiê para IA
@@ -372,9 +373,9 @@ def gerar_dossie_ia(df_periodo, df_km_periodo, d_ini, d_end):
 
     return "\n".join(prompt_linhas)
 
-# Carregamento de dados
-df_completo = carregar_dados()
-df_turnos_km = carregar_turnos_km()
+# Carregamento filtrado pelo usuário logado
+df_completo = carregar_dados(USUARIO_ID)
+df_turnos_km = carregar_turnos_km(USUARIO_ID)
 
 if "msg_sucesso" in st.session_state:
     st.success(st.session_state.pop("msg_sucesso"))
@@ -403,21 +404,20 @@ def modal_editar_turno(turno_id, km_ini_atual, km_fim_atual):
             elif p_fim is not None and p_fim < p_ini:
                 st.error("O KM final não pode ser menor que o inicial.")
             else:
-                editar_turno_banco(turno_id, p_ini, p_fim)
+                editar_turno_banco(turno_id, p_ini, p_fim, USUARIO_ID)
                 st.session_state["msg_sucesso"] = "Turno atualizado com sucesso!"
                 st.rerun()
     with col2:
         if st.button("✖️ Cancelar", use_container_width=True):
             st.rerun()
 
-# Modal Dinâmico de Edição do Dia (Bloqueia opções sem registro e atualiza valores na troca)
+# Modal Dinâmico de Edição do Dia
 @st.dialog("✏️ Editar Lançamento do Dia")
 def modal_editar_lancamento_dia(data_ref, lancamentos_dia_df):
     if lancamentos_dia_df.empty:
         st.info("Nenhum lançamento registrado nesta data.")
         return
 
-    # Mapeamento estrito: apenas itens registrados no dia
     mapa_itens = {}
     lista_rotulos = []
     for _, r in lancamentos_dia_df.iterrows():
@@ -466,12 +466,12 @@ def modal_editar_lancamento_dia(data_ref, lancamentos_dia_df):
             if v_num <= 0:
                 st.error("Informe um valor maior que zero.")
             else:
-                atualizar_registro(item_id, data_ref, item_ativo["tipo"], item_ativo["categoria"], nova_desc.strip(), v_num)
+                atualizar_registro(item_id, data_ref, item_ativo["tipo"], item_ativo["categoria"], nova_desc.strip(), v_num, USUARIO_ID)
                 st.session_state["msg_sucesso"] = f"Lançamento #{item_id} atualizado com sucesso!"
                 st.rerun()
 
         if btn_excluir:
-            deletar_registro(item_id)
+            deletar_registro(item_id, USUARIO_ID)
             st.session_state["msg_sucesso"] = f"Lançamento #{item_id} excluído com sucesso!"
             st.rerun()
 
@@ -494,7 +494,7 @@ def modal_editar_registro(item_id, item_data, item_tipo, item_cat, item_desc, it
             if v_num <= 0:
                 st.error("Informe um valor maior que zero.")
             else:
-                atualizar_registro(item_id, item_data, item_tipo, cat_final, nova_desc, v_num)
+                atualizar_registro(item_id, item_data, item_tipo, cat_final, nova_desc, v_num, USUARIO_ID)
                 st.session_state["msg_sucesso"] = f"Lançamento #{item_id} atualizado!"
                 st.rerun()
 
@@ -505,7 +505,7 @@ def modal_excluir_registro(item_id, item_cat, item_val_formatado):
     col1, col2 = st.columns(2)
     with col1:
         if st.button("✔️ Sim, excluir", type="primary", use_container_width=True):
-            deletar_registro(item_id)
+            deletar_registro(item_id, USUARIO_ID)
             st.session_state["msg_sucesso"] = "Lançamento excluído com sucesso!"
             st.rerun()
     with col2:
@@ -576,7 +576,7 @@ with tab_operacao:
                     modal_editar_turno(t_id, k_ini, k_fim)
             with col_t_del:
                 if st.button("🗑️", key=f"btn_del_turno_{t_id}", use_container_width=True):
-                    deletar_turno_banco(t_id)
+                    deletar_turno_banco(t_id, USUARIO_ID)
                     st.session_state["msg_sucesso"] = f"Turno #{t_id} removido."
                     st.rerun()
             idx_t += 1
@@ -603,7 +603,7 @@ with tab_operacao:
                     st.error(f"O KM final não pode ser menor que o inicial ({km_ini_ativo:,} km).".replace(",", "."))
                 else:
                     km_rodado_calc = val_kf - km_ini_ativo
-                    fechar_turno(id_aberto, val_kf, km_rodado_calc)
+                    fechar_turno(id_aberto, val_kf, km_rodado_calc, USUARIO_ID)
                     st.session_state["msg_sucesso"] = f"Turno finalizado! +{km_rodado_calc} km computados."
                     st.rerun()
     else:
@@ -622,7 +622,7 @@ with tab_operacao:
                 if val_ki is None or val_ki <= 0:
                     st.error("Informe um KM inicial inteiro e válido.")
                 else:
-                    abrir_novo_turno(data_atual, val_ki)
+                    abrir_novo_turno(data_atual, val_ki, USUARIO_ID)
                     st.session_state["msg_sucesso"] = f"Turno iniciado em {val_ki:,} km!".replace(",", ".")
                     st.rerun()
 
@@ -664,7 +664,7 @@ with tab_operacao:
                 st.error("Indique o nome da categoria 'Outro'.")
             else:
                 tipo_bd = "Receita" if eh_rec else "Despesa"
-                inserir_registro_avulso(data_atual, tipo_bd, cat_final_avulsa, obs_avulsa.strip(), v_calc)
+                inserir_registro_avulso(data_atual, tipo_bd, cat_final_avulsa, obs_avulsa.strip(), v_calc, USUARIO_ID)
                 st.session_state["msg_sucesso"] = f"{tipo_bd} de {formata_real(v_calc)} salva com sucesso!"
                 st.rerun()
 
@@ -774,7 +774,7 @@ with tab_operacao:
                 st.warning("Preencha ao menos uma categoria pendente para concluir o fechamento.")
             else:
                 if novos_itens:
-                    salvar_fechamento_em_lote(data_atual, novos_itens)
+                    salvar_fechamento_em_lote(data_atual, novos_itens, USUARIO_ID)
                 st.session_state["msg_sucesso"] = f"Fechamento do dia {data_atual.strftime('%d/%m/%Y')} concluído com sucesso!"
                 st.rerun()
 
@@ -883,12 +883,12 @@ else:
 if not df_completo.empty:
     df_f = df_completo[(df_completo["data"].dt.date >= d_inicio) & (df_completo["data"].dt.date <= d_fim)].copy()
 else:
-    df_f = pd.DataFrame(columns=["id", "data", "tipo", "categoria", "descricao", "valor"])
+    df_f = pd.DataFrame(columns=["id", "data", "tipo", "categoria", "descricao", "valor", "usuario_id"])
 
 if not df_turnos_km.empty:
     df_km_f = df_turnos_km[(df_turnos_km["data"].dt.date >= d_inicio) & (df_turnos_km["data"].dt.date <= d_fim)].copy()
 else:
-    df_km_f = pd.DataFrame(columns=["id", "data", "km_inicial", "km_final", "km_rodado"])
+    df_km_f = pd.DataFrame(columns=["id", "data", "km_inicial", "km_final", "km_rodado", "usuario_id"])
 
 tot_rec = df_f[df_f["tipo"] == "Receita"]["valor"].sum() if not df_f.empty else 0.0
 tot_desp = df_f[df_f["tipo"] == "Despesa"]["valor"].sum() if not df_f.empty else 0.0
