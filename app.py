@@ -30,12 +30,12 @@ st.markdown("""
     .stButton button {
         border-radius: 8px;
     }
-    .turno-card {
-        padding: 12px 16px;
-        border-radius: 8px;
-        background-color: rgba(128, 128, 128, 0.08);
-        border: 1px solid rgba(128, 128, 128, 0.2);
-        margin-bottom: 8px;
+    .card-fechamento-km {
+        padding: 14px 18px;
+        border-radius: 10px;
+        background-color: rgba(0, 204, 150, 0.08);
+        border: 1px solid rgba(0, 204, 150, 0.3);
+        margin-bottom: 12px;
     }
     div[data-testid="stDateInput"] input {
         caret-color: transparent !important;
@@ -172,8 +172,6 @@ if "db_inicializado" not in st.session_state:
                     valor NUMERIC(10, 2) NOT NULL
                 );
             '''))
-            
-            # Cria a tabela de turnos caso ainda não exista
             conn.execute(text('''
                 CREATE TABLE IF NOT EXISTS turnos_km (
                     data DATE NOT NULL,
@@ -182,12 +180,9 @@ if "db_inicializado" not in st.session_state:
                     km_rodado INTEGER
                 );
             '''))
-            
-            # Migração: adiciona coluna id se a tabela já existia sem ela
             conn.execute(text('''
                 ALTER TABLE turnos_km ADD COLUMN IF NOT EXISTS id SERIAL;
             '''))
-            # Remove a restrição antiga de data única para permitir múltiplos turnos no mesmo dia
             conn.execute(text('''
                 DO $$
                 BEGIN
@@ -278,14 +273,28 @@ def inserir_registro_avulso(data_reg, tipo, categoria, descricao, valor):
         '''), {"data": data_reg, "tipo": tipo, "categoria": categoria, "descricao": descricao, "valor": valor})
     carregar_dados.clear()
 
+def salvar_fechamento_em_lote(data_reg, lista_lancamentos):
+    with engine.begin() as conn:
+        for item in lista_lancamentos:
+            conn.execute(text('''
+                INSERT INTO lancamentos (data, tipo, categoria, descricao, valor)
+                VALUES (:data, :tipo, :categoria, :descricao, :valor)
+            '''), {
+                "data": data_reg,
+                "tipo": item["tipo"],
+                "categoria": item["categoria"],
+                "descricao": item["descricao"],
+                "valor": item["valor"]
+            })
+    carregar_dados.clear()
+
 def atualizar_registro(id_reg, data_reg, tipo, categoria, descricao, valor):
     with engine.begin() as conn:
         conn.execute(text('''
             UPDATE lancamentos
             SET data = :data, tipo = :tipo, categoria = :categoria, descricao = :descricao, valor = :valor
             WHERE id = :id
-        '''), {"data": data_reg, "tipo": tipo, "categoria": categoria, "descricao": descricao, "valor": valor, "id": id_reg}
-        )
+        '''), {"data": data_reg, "tipo": tipo, "categoria": categoria, "descricao": descricao, "valor": valor, "id": id_reg})
     carregar_dados.clear()
 
 def deletar_registro(id_reg):
@@ -442,7 +451,7 @@ def modal_excluir_registro(item_id, item_cat, item_val_formatado):
 tab_operacao, tab_gerenciar = st.tabs(["⚡ Operação do Dia (Turnos & Parciais)", "⚙️ Histórico Financeiro"])
 
 # ==============================================================
-# ABA 1: OPERAÇÃO DO DIA (MÚLTIPLOS TURNOS E LANÇAMENTOS PARCIAIS)
+# ABA 1: OPERAÇÃO DO DIA (TURNOS, PARCIAIS E FECHAMENTO GERAL)
 # ==============================================================
 with tab_operacao:
     # Seletor de Data
@@ -470,21 +479,23 @@ with tab_operacao:
     data_atual = st.session_state["data_operacao"]
     st.caption(f"🗓️ Gerenciando dia: **{data_atual.strftime('%d/%m/%Y')}** ({DIAS_SEMANA_PT[data_atual.weekday()]})")
 
-    # Filtra turnos do dia
+    # Filtra turnos e lançamentos do dia selecionado
     turnos_do_dia = df_turnos_km[df_turnos_km["data"].dt.date == data_atual].sort_values("id") if not df_turnos_km.empty else pd.DataFrame()
     turno_aberto = turnos_do_dia[turnos_do_dia["km_final"].isnull()] if not turnos_do_dia.empty else pd.DataFrame()
     tem_turno_aberto = not turno_aberto.empty
+    total_km_dia = int(round(turnos_do_dia["km_rodado"].dropna().sum())) if not turnos_do_dia.empty else 0
+
+    # Lançamentos já realizados hoje
+    lancamentos_hoje = df_completo[df_completo["data"].dt.date == data_atual] if not df_completo.empty else pd.DataFrame()
 
     # --- SEÇÃO 1: GESTÃO DE TURNOS DE QUILOMETRAGEM ---
     st.markdown("---")
-    st.markdown("#### 🚗 Turnos de Trabalho (Quilometragem)")
-    st.caption("Abra um turno ao começar a trabalhar e feche ao pausar para atividades pessoais.")
+    st.markdown("#### 🚗 1. Turnos de Trabalho (Quilometragem)")
+    st.caption("Abra um turno ao começar a trabalhar e feche ao pausar para atividades particulares.")
 
     if not turnos_do_dia.empty:
-        total_km_dia = int(round(turnos_do_dia["km_rodado"].dropna().sum()))
-        st.markdown(f"**Turnos registrados no dia:** (Total trabalhado: **{formata_km(total_km_dia)}**)")
-        
-        idx_turno = 1
+        st.markdown(f"**Turnos de trabalho no dia:** (Soma acumulada: **{formata_km(total_km_dia)}**)")
+        idx_t = 1
         for _, t in turnos_do_dia.iterrows():
             t_id = int(t["id"])
             k_ini = int(t["km_inicial"])
@@ -494,9 +505,9 @@ with tab_operacao:
             col_t_info, col_t_edit, col_t_del = st.columns([5, 1, 1])
             with col_t_info:
                 if k_fim is not None:
-                    st.markdown(f"✅ **Turno {idx_turno}:** {k_ini:,} km ➔ {k_fim:,} km | **+{k_rod} km rodados**".replace(",", "."))
+                    st.markdown(f"✅ **Turno {idx_t}:** {k_ini:,} km ➔ {k_fim:,} km | **+{k_rod} km rodados**".replace(",", "."))
                 else:
-                    st.markdown(f"⏳ **Turno {idx_turno} (EM ANDAMENTO):** Iniciado em **{k_ini:,} km**".replace(",", "."))
+                    st.markdown(f"⏳ **Turno {idx_t} (EM ANDAMENTO):** Aberto em **{k_ini:,} km**".replace(",", "."))
             with col_t_edit:
                 if st.button("✏️", key=f"btn_ed_turno_{t_id}", use_container_width=True):
                     modal_editar_turno(t_id, k_ini, k_fim)
@@ -505,22 +516,22 @@ with tab_operacao:
                     deletar_turno_banco(t_id)
                     st.session_state["msg_sucesso"] = f"Turno #{t_id} removido."
                     st.rerun()
-            idx_turno += 1
+            idx_t += 1
 
-    # Formulário dinâmico de Abertura ou Fechamento
+    # Form de Abrir/Fechar Turno
     if tem_turno_aberto:
         t_ativo = turno_aberto.iloc[0]
         id_aberto = int(t_ativo["id"])
         km_ini_ativo = int(t_ativo["km_inicial"])
 
-        st.warning(f"🔔 **Turno em Aberto:** Iniciado no odômetro **{km_ini_ativo:,} km**.".replace(",", "."))
+        st.warning(f"🔔 **Turno em Aberto:** Iniciado em **{km_ini_ativo:,} km**.".replace(",", "."))
         with st.form("form_fechar_turno"):
             c_kf, c_btnf = st.columns([2, 1])
             with c_kf:
-                input_km_fim = st.text_input("Odômetro ao finalizar este turno:", placeholder=f"Ex: {km_ini_ativo + 80}")
+                input_km_fim = st.text_input("Odômetro ao encerrar este turno:", placeholder=f"Ex: {km_ini_ativo + 80}")
             with c_btnf:
                 st.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
-                btn_fechar_t = st.form_submit_button("🏁 Fechar Turno de Trabalho", type="primary", use_container_width=True)
+                btn_fechar_t = st.form_submit_button("🏁 Pausar / Fechar Turno", type="primary", use_container_width=True)
 
             if btn_fechar_t:
                 val_kf = converter_km_inteiro(input_km_fim)
@@ -531,7 +542,7 @@ with tab_operacao:
                 else:
                     km_rodado_calc = val_kf - km_ini_ativo
                     fechar_turno(id_aberto, val_kf, km_rodado_calc)
-                    st.session_state["msg_sucesso"] = f"Turno finalizado com sucesso! +{km_rodado_calc} km rodados."
+                    st.session_state["msg_sucesso"] = f"Turno finalizado! +{km_rodado_calc} km computados."
                     st.rerun()
     else:
         with st.form("form_abrir_turno"):
@@ -553,10 +564,10 @@ with tab_operacao:
                     st.session_state["msg_sucesso"] = f"Turno iniciado em {val_ki:,} km!".replace(",", ".")
                     st.rerun()
 
-    # --- SEÇÃO 2: LANÇAMENTOS PARCIAIS / AVULSOS AO LONGO DO DIA ---
+    # --- SEÇÃO 2: LANÇAMENTO RÁPIDO PARCIAL AO LONGO DO DIA ---
     st.markdown("---")
-    st.markdown("#### 💵 Lançamentos Parciais (Ganhos & Despesas na Hora)")
-    st.caption("Abasteceu, lavou o carro ou recebeu uma corrida? Lance aqui individualmente a qualquer momento do dia.")
+    st.markdown("#### ⚡ 2. Lançamento Rápido no Dia (Despesas ou Ganhos)")
+    st.caption("Abasteceu, lavou o carro ou recebeu uma corrida avulsa? Salve aqui imediatamente a qualquer momento.")
 
     col_sel_tipo, col_sel_cat = st.columns(2)
     with col_sel_tipo:
@@ -594,14 +605,127 @@ with tab_operacao:
                 st.session_state["msg_sucesso"] = f"{tipo_bd} de {formata_real(v_calc)} salva com sucesso!"
                 st.rerun()
 
-    # Exibe lançamentos já feitos hoje
-    lancamentos_hoje = df_completo[df_completo["data"].dt.date == data_atual] if not df_completo.empty else pd.DataFrame()
+    # --- SEÇÃO 3: FECHAMENTO GERAL DO DIA (CHECKLIST CONSOLIDADO) ---
+    st.markdown("---")
+    st.markdown("#### 🏁 3. Fechamento Geral do Dia (Checklist Final)")
+    st.caption("Consolide o encerramento do seu dia: veja os KMs totais, itens já salvos e lance o que ficou pendente.")
+
+    # Card com a soma total dos KMs de todos os turnos de trabalho
+    col_km_soma1, col_km_soma2 = st.columns([2.5, 1])
+    with col_km_soma1:
+        st.markdown(f"**🚗 Quilometragem Total Trabalhada no Dia:**")
+        st.markdown(f"### `{formata_km(total_km_dia)}`")
+    with col_km_soma2:
+        if tem_turno_aberto:
+            st.error("⚠️ Há um turno aberto!")
+        else:
+            qtd_turnos = len(turnos_do_dia)
+            st.success(f"✔️ {qtd_turnos} turno(s) fechado(s)")
+
+    # Mapeamento do que já foi lançado hoje
+    categorias_lancadas_hoje = {}
     if not lancamentos_hoje.empty:
-        st.markdown(f"**Lançamentos registrados para o dia {data_atual.strftime('%d/%m/%Y')}:**")
         for _, row in lancamentos_hoje.iterrows():
+            categorias_lancadas_hoje[row["categoria"]] = {
+                "id": int(row["id"]),
+                "tipo": row["tipo"],
+                "valor": float(row["valor"]),
+                "descricao": row["descricao"] if row["descricao"] else ""
+            }
+
+    # Formulário do Fechamento do Dia
+    with st.form("form_fechamento_geral_dia"):
+        st.markdown("##### 🟢 Ganhos (Receitas do Dia):")
+        
+        campos_pendentes_rec = {}
+        for cat in OPCOES_RECEITA_FIXAS:
+            if cat in categorias_lancadas_hoje:
+                dados_cat = categorias_lancadas_hoje[cat]
+                st.text_input(
+                    f"✔️ {cat} (Já Registrado - Travado):",
+                    value=f"{formata_real(dados_cat['valor'])} - {dados_cat['descricao']}" if dados_cat['descricao'] else formata_real(dados_cat['valor']),
+                    disabled=True,
+                    key=f"lock_rec_{cat}"
+                )
+            else:
+                campos_pendentes_rec[cat] = st.text_input(
+                    f"{cat} (R$):",
+                    placeholder="Deixe em branco se não realizou",
+                    key=f"pend_rec_{cat}"
+                )
+
+        st.markdown("---")
+        st.markdown("##### 🔴 Despesas do Dia:")
+        
+        campos_pendentes_desp = {}
+        for cat in OPCOES_DESPESA_FIXAS:
+            if cat in categorias_lancadas_hoje:
+                dados_cat = categorias_lancadas_hoje[cat]
+                st.text_input(
+                    f"✔️ {cat} (Já Registrado - Travado):",
+                    value=f"{formata_real(dados_cat['valor'])} - {dados_cat['descricao']}" if dados_cat['descricao'] else formata_real(dados_cat['valor']),
+                    disabled=True,
+                    key=f"lock_desp_{cat}"
+                )
+            else:
+                campos_pendentes_desp[cat] = st.text_input(
+                    f"{cat} (R$):",
+                    placeholder="Deixe em branco se não gastou",
+                    key=f"pend_desp_{cat}"
+                )
+
+        st.markdown("---")
+        st.markdown("##### ➕ Outro Custo / Manutenção Adicional:")
+        col_out1, col_out2 = st.columns([1.2, 2])
+        with col_out1:
+            val_outro_fechamento = st.text_input("Outro Custo (R$):", placeholder="0,00", key="fech_outro_val")
+        with col_out2:
+            obs_outro_fechamento = st.text_input("Observação do outro custo:", placeholder="Ex: Troca de lâmpada, café...", key="fech_outro_obs")
+
+        btn_concluir_dia = st.form_submit_button("🏁 Gravar Fechamento Final do Dia", type="primary", use_container_width=True)
+
+        if btn_concluir_dia:
+            novos_itens = []
+
+            # Coleta receitas pendentes preenchidas
+            for cat, campo_val in campos_pendentes_rec.items():
+                v = converter_valor(campo_val)
+                if v > 0:
+                    novos_itens.append({"tipo": "Receita", "categoria": cat, "descricao": "", "valor": v})
+
+            # Coleta despesas pendentes preenchidas
+            for cat, campo_val in campos_pendentes_desp.items():
+                v = converter_valor(campo_val)
+                if v > 0:
+                    novos_itens.append({"tipo": "Despesa", "categoria": cat, "descricao": "", "valor": v})
+
+            # Coleta outro custo se informado
+            v_outro = converter_valor(val_outro_fechamento)
+            if v_outro > 0:
+                novos_itens.append({"tipo": "Despesa", "categoria": "Outro", "descricao": obs_outro_fechamento.strip(), "valor": v_outro})
+
+            if not novos_itens and not categorias_lancadas_hoje and total_km_dia == 0:
+                st.warning("Preencha ao menos uma categoria pendente para concluir o fechamento.")
+            else:
+                if novos_itens:
+                    salvar_fechamento_em_lote(data_atual, novos_itens)
+                st.session_state["msg_sucesso"] = f"Fechamento do dia {data_atual.strftime('%d/%m/%Y')} concluído com sucesso!"
+                st.rerun()
+
+    # Painel de Lançamentos de Hoje com botão de edição rápida dos itens já salvos
+    if not lancamentos_hoje.empty:
+        st.markdown(f"**Itens já lançados hoje:** *(clique em ✏️ se precisar alterar algum valor)*")
+        for _, row in lancamentos_hoje.iterrows():
+            item_id = int(row["id"])
             t_icon = "🟢" if row["tipo"] == "Receita" else "🔴"
             obs_txt = f" - *{row['descricao']}*" if row["descricao"] else ""
-            st.markdown(f"{t_icon} **{row['categoria']}**: {formata_real(row['valor'])}{obs_txt}")
+
+            col_inf_hoje, col_btn_hoje = st.columns([5, 1])
+            with col_inf_hoje:
+                st.markdown(f"{t_icon} **{row['categoria']}**: **{formata_real(row['valor'])}**{obs_txt}")
+            with col_btn_hoje:
+                if st.button("✏️ Editar", key=f"btn_ed_hoje_{item_id}", use_container_width=True):
+                    modal_editar_registro(item_id, data_atual, row["tipo"], row["categoria"], row["descricao"], row["valor"])
 
 # ==============================================================
 # ABA 2: GERENCIAR REGISTROS (HISTÓRICO FINANCEIRO)
