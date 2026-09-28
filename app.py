@@ -97,6 +97,16 @@ OPCOES_DESPESA_FIXAS = ["Combustível", "Lavagem", "SemParar do dia"]
 OPCOES_RECEITA_FORM = OPCOES_RECEITA_FIXAS + ["Outro"]
 OPCOES_DESPESA_FORM = OPCOES_DESPESA_FIXAS + ["Outro"]
 
+DIAS_SEMANA_PT = {
+    0: "Segunda-feira",
+    1: "Terça-feira",
+    2: "Quarta-feira",
+    3: "Quinta-feira",
+    4: "Sexta-feira",
+    5: "Sábado",
+    6: "Domingo"
+}
+
 # Função auxiliar para formatação em Real brasileiro (R$ 1.250,50)
 def formata_real(valor):
     return f"R$ {valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
@@ -195,6 +205,113 @@ def deletar_registro(id_reg):
     with engine.begin() as conn:
         conn.execute(text('DELETE FROM lancamentos WHERE id = :id'), {"id": id_reg})
     carregar_dados.clear()
+
+# Gerador de Dossiê Estruturado com Prompt para IA
+def gerar_dossie_ia(df_periodo, d_ini, d_end):
+    if df_periodo.empty:
+        return "Nenhum dado encontrado para o período."
+
+    df_local = df_periodo.copy()
+    df_local["dia_semana"] = df_local["data"].dt.dayofweek.map(DIAS_SEMANA_PT)
+    
+    tot_rec = df_local[df_local["tipo"] == "Receita"]["valor"].sum()
+    tot_desp = df_local[df_local["tipo"] == "Despesa"]["valor"].sum()
+    lucro = tot_rec - tot_desp
+    margem = (lucro / tot_rec * 100) if tot_rec > 0 else 0.0
+
+    dias_trabalhados = df_local["data"].dt.date.nunique()
+    media_lucro_dia = (lucro / dias_trabalhados) if dias_trabalhados > 0 else 0.0
+    media_faturamento_dia = (tot_rec / dias_trabalhados) if dias_trabalhados > 0 else 0.0
+
+    # Agrupamentos
+    rec_por_cat = df_local[df_local["tipo"] == "Receita"].groupby("categoria")["valor"].sum().to_dict()
+    desp_por_cat = df_local[df_local["tipo"] == "Despesa"].groupby("categoria")["valor"].sum().to_dict()
+
+    # Performance por dia da semana
+    df_diario = df_local.groupby(["data", "dia_semana", "tipo"])["valor"].sum().unstack(fill_value=0).reset_index()
+    if "Receita" not in df_diario.columns:
+        df_diario["Receita"] = 0.0
+    if "Despesa" not in df_diario.columns:
+        df_diario["Despesa"] = 0.0
+    df_diario["Lucro"] = df_diario["Receita"] - df_diario["Despesa"]
+
+    desempenho_semana = df_diario.groupby("dia_semana").agg(
+        dias_rodados=("data", "count"),
+        faturamento_medio=("Receita", "mean"),
+        despesa_media=("Despesa", "mean"),
+        lucro_medio=("Lucro", "mean")
+    ).reset_index()
+
+    # Montagem do relatório textual com o prompt embutido
+    prompt_linhas = [
+        "# RELATÓRIO OPERACIONAL E FINANCEIRO — MOTORISTA DE APLICATIVO",
+        "",
+        "## INSTRUÇÕES PARA A INTELIGÊNCIA ARTIFICIAL",
+        "Você é um consultor financeiro e de estratégia operacional sênior para motoristas de aplicativo.",
+        "Analise minuciosamente os dados abaixo e forneça um diagnóstico estratégico com:",
+        "1. **Análise de Rentabilidade e Custos:** O peso do combustível e manutenção em relação à receita bruta e sua margem líquida real.",
+        "2. **Padrões de Eficiência por Dia da Semana:** Quais dias são mais lucrativos por quilômetro/esforço e quais dias dão prejuízo ou lucro marginal baixo (recomendação de dias de folga ideais).",
+        "3. **Análise de Canais/Aplicativos:** Se há dependência excessiva de um app e qual canal gera maior retorno líquido.",
+        "4. **Plano de Ação Prático (3 Passos Imediatos):** Sugestões de corte de desperdício, otimização de horários e planejamento de reserva para manutenção e depreciação veicular.",
+        "",
+        "---",
+        "## 1. RESUMO EXECUTIVO DO PERÍODO",
+        f"- **Período:** {d_ini.strftime('%d/%m/%Y')} até {d_end.strftime('%d/%m/%Y')}",
+        f"- **Dias Trabalhados:** {dias_trabalhados} dia(s)",
+        f"- **Faturamento Bruto:** {formata_real(tot_rec)}",
+        f"- **Despesas Totais:** {formata_real(tot_desp)}",
+        f"- **Lucro Líquido:** {formata_real(lucro)}",
+        f"- **Margem Líquida:** {margem:.2f}%",
+        f"- **Média de Faturamento por Dia:** {formata_real(media_faturamento_dia)} / dia",
+        f"- **Média de Lucro Líquido por Dia:** {formata_real(media_lucro_dia)} / dia",
+        "",
+        "---",
+        "## 2. ORIGEM DAS RECEITAS (POR APLICATIVO / CANAL)"
+    ]
+
+    for cat, val in rec_por_cat.items():
+        pct = (val / tot_rec * 100) if tot_rec > 0 else 0
+        prompt_linhas.append(f"- **{cat}:** {formata_real(val)} ({pct:.1f}% do total faturado)")
+
+    prompt_linhas.extend([
+        "",
+        "---",
+        "## 3. COMPOSIÇÃO DOS CUSTOS OPERACIONAIS"
+    ])
+
+    for cat, val in desp_por_cat.items():
+        pct_desp = (val / tot_desp * 100) if tot_desp > 0 else 0
+        pct_rec = (val / tot_rec * 100) if tot_rec > 0 else 0
+        prompt_linhas.append(f"- **{cat}:** {formata_real(val)} ({pct_desp:.1f}% das despesas | consome {pct_rec:.1f}% do faturamento)")
+
+    prompt_linhas.extend([
+        "",
+        "---",
+        "## 4. DESEMPENHO MÉDIO POR DIA DA SEMANA",
+        "| Dia da Semana | Dias Trabalhados | Faturamento Médio | Custo Médio | Lucro Médio Diário |",
+        "| :--- | :--- | :--- | :--- | :--- |"
+    ])
+
+    for _, row in desempenho_semana.iterrows():
+        prompt_linhas.append(
+            f"| {row['dia_semana']} | {int(row['dias_rodados'])} | {formata_real(row['faturamento_medio'])} | {formata_real(row['despesa_media'])} | {formata_real(row['lucro_medio'])} |"
+        )
+
+    prompt_linhas.extend([
+        "",
+        "---",
+        "## 5. HISTÓRICO DE REGISTROS INDIVIDUAIS",
+        "| Data | Dia da Semana | Tipo | Categoria | Valor | Observação |",
+        "| :--- | :--- | :--- | :--- | :--- | :--- |"
+    ])
+
+    for _, row in df_local.iterrows():
+        obs = row['descricao'] if row['descricao'] else "-"
+        prompt_linhas.append(
+            f"| {row['data'].strftime('%d/%m/%Y')} | {row['dia_semana']} | {row['tipo']} | {row['categoria']} | {formata_real(row['valor'])} | {obs} |"
+        )
+
+    return "\n".join(prompt_linhas)
 
 df_completo = carregar_dados()
 
@@ -304,9 +421,8 @@ def modal_excluir_registro(item_id, item_cat, item_val_formatado):
 # Abas Nativas
 tab_novo, tab_gerenciar = st.tabs(["➕ Novo Lançamento", "⚙️ Gerenciar Registros"])
 
-# --- ABA 1: NOVO LANÇAMENTO (SELETORES INTERATIVOS FORA DO FORM) ---
+# --- ABA 1: NOVO LANÇAMENTO ---
 with tab_novo:
-    # 1. Seleção de Data com atalhos rápidos
     st.markdown("**Data do Lançamento:**")
     col_h, col_o, col_d = st.columns([1, 1, 2])
     
@@ -333,7 +449,6 @@ with tab_novo:
 
     st.caption(f"🗓️ Data definida: **{st.session_state['data_novo_lancamento'].strftime('%d/%m/%Y')}**")
 
-    # 2. Seleção de Tipo e Categoria FORA do formulário para atualizar instantaneamente
     col_t1, col_t2 = st.columns(2)
     with col_t1:
         tipo_escolhido = st.radio(
@@ -353,7 +468,6 @@ with tab_novo:
             key="novo_cat_box"
         )
 
-    # 3. Formulário de envio com os dados de digitação
     with st.form("form_novo_lancamento", clear_on_submit=True):
         cat_final = cat_selecionada
         if cat_selecionada == "Outro":
@@ -597,14 +711,29 @@ else:
                 hide_index=True
             )
 
-            csv_data = df_tabela[["id", "data", "tipo", "categoria", "valor", "descricao"]].to_csv(index=False).encode('utf-8')
-            st.download_button(
-                label="📥 Baixar Dados da Tabela Filtrada (CSV)",
-                data=csv_data,
-                file_name=f"financeiro_{periodo_selecionado.lower().replace(' ', '_')}_filtrado.csv",
-                mime="text/csv",
-                use_container_width=True
-            )
+            # Botões de Exportação: CSV Normal e Dossiê Especial para IA
+            col_exp1, col_exp2 = st.columns(2)
+            
+            with col_exp1:
+                csv_data = df_tabela[["id", "data", "tipo", "categoria", "valor", "descricao"]].to_csv(index=False).encode('utf-8')
+                st.download_button(
+                    label="📥 Baixar Dados da Tabela (CSV)",
+                    data=csv_data,
+                    file_name=f"financeiro_{periodo_selecionado.lower().replace(' ', '_')}_filtrado.csv",
+                    mime="text/csv",
+                    use_container_width=True
+                )
+                
+            with col_exp2:
+                dossie_ia_texto = gerar_dossie_ia(df_f, d_inicio, d_fim)
+                st.download_button(
+                    label="🤖 Baixar Relatório Otimizado para IA (.md)",
+                    data=dossie_ia_texto.encode('utf-8'),
+                    file_name=f"relatorio_ia_financeiro_{periodo_selecionado.lower().replace(' ', '_')}.md",
+                    mime="text/markdown",
+                    type="primary",
+                    use_container_width=True
+                )
 
         # --- SEÇÃO 1 DE GRÁFICOS: DISTRIBUIÇÃO POR ORIGEM E CUSTO ---
         st.markdown("---")
