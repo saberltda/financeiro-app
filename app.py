@@ -153,7 +153,7 @@ def get_db_engine():
 
 engine = get_db_engine()
 
-# Inicialização de tabelas (Lançamentos e Turnos de Quilometragem)
+# Inicialização de tabelas
 if "db_inicializado" not in st.session_state:
     try:
         with engine.begin() as conn:
@@ -180,11 +180,12 @@ if "db_inicializado" not in st.session_state:
         st.error(f"Erro de conexão com o banco de dados: {str(e)}")
         st.stop()
 
-# Operações de Banco de Dados com Cache
+# Operações de Banco de Dados com Cache e Tipagem Blindada
 @st.cache_data(ttl=600)
 def carregar_dados():
     with engine.connect() as conn:
         df = pd.read_sql_query(text("SELECT * FROM lancamentos ORDER BY data DESC, id DESC"), conn)
+    
     if not df.empty:
         df["data"] = pd.to_datetime(df["data"])
         df["valor"] = df["valor"].astype(float)
@@ -192,13 +193,24 @@ def carregar_dados():
             "Uber": "Uber sem pedágios",
             "99": "99 com pedágios"
         })
+    else:
+        df = pd.DataFrame(columns=["id", "data", "tipo", "categoria", "descricao", "valor"])
+        df["data"] = pd.to_datetime(df["data"])
+        df["valor"] = df["valor"].astype(float)
     return df
 
 @st.cache_data(ttl=600)
 def carregar_turnos_km():
     with engine.connect() as conn:
         df_km = pd.read_sql_query(text("SELECT * FROM turnos_km ORDER BY data DESC"), conn)
+    
     if not df_km.empty:
+        df_km["data"] = pd.to_datetime(df_km["data"])
+        df_km["km_inicial"] = df_km["km_inicial"].astype(float)
+        df_km["km_final"] = df_km["km_final"].astype(float)
+        df_km["km_rodado"] = df_km["km_rodado"].astype(float)
+    else:
+        df_km = pd.DataFrame(columns=["data", "km_inicial", "km_final", "km_rodado"])
         df_km["data"] = pd.to_datetime(df_km["data"])
         df_km["km_inicial"] = df_km["km_inicial"].astype(float)
         df_km["km_final"] = df_km["km_final"].astype(float)
@@ -217,7 +229,6 @@ def salvar_km_inicial(data_reg, km_ini):
 
 def salvar_fechamento_turno(data_reg, km_ini, km_fim, km_rodado, lista_lancamentos):
     with engine.begin() as conn:
-        # Salva o turno de KM
         conn.execute(text('''
             INSERT INTO turnos_km (data, km_inicial, km_final, km_rodado)
             VALUES (:data, :km_ini, :km_fim, :km_rodado)
@@ -227,7 +238,6 @@ def salvar_fechamento_turno(data_reg, km_ini, km_fim, km_rodado, lista_lancament
                 km_rodado = EXCLUDED.km_rodado;
         '''), {"data": data_reg, "km_ini": km_ini, "km_fim": km_fim, "km_rodado": km_rodado})
 
-        # Insere todos os lançamentos do checklist
         for l in lista_lancamentos:
             conn.execute(text('''
                 INSERT INTO lancamentos (data, tipo, categoria, descricao, valor)
@@ -248,7 +258,8 @@ def atualizar_registro(id_reg, data_reg, tipo, categoria, descricao, valor):
             UPDATE lancamentos
             SET data = :data, tipo = :tipo, categoria = :categoria, descricao = :descricao, valor = :valor
             WHERE id = :id
-        '''), {"data": data_reg, "tipo": tipo, "categoria": categoria, "descricao": descricao, "valor": valor, "id": id_reg})
+        '''), {"data": data_reg, "tipo": tipo, "categoria": categoria, "descricao": descricao, "valor": valor, "id": id_reg}
+        )
     carregar_dados.clear()
 
 def deletar_registro(id_reg):
@@ -256,7 +267,7 @@ def deletar_registro(id_reg):
         conn.execute(text('DELETE FROM lancamentos WHERE id = :id'), {"id": id_reg})
     carregar_dados.clear()
 
-# Gerador de Dossiê Especial para IA com Métricas de KM
+# Gerador de Dossiê para IA
 def gerar_dossie_ia(df_periodo, df_km_periodo, d_ini, d_end):
     if df_periodo.empty and df_km_periodo.empty:
         return "Nenhum dado encontrado para o período."
@@ -396,7 +407,6 @@ tab_turno, tab_gerenciar = st.tabs(["📋 Painel do Turno (KM & Fechamento)", "�
 # ABA 1: PAINEL DO TURNO & FECHAMENTO DIÁRIO
 # ==========================================
 with tab_turno:
-    # Seletor de Data com botões rápidos
     st.markdown("**Data de Referência do Turno:**")
     c_h, c_o, c_d = st.columns([1, 1, 2])
     with c_h:
@@ -421,11 +431,16 @@ with tab_turno:
     data_atual = st.session_state["data_turno"]
     st.caption(f"🗓️ Turno ativo: **{data_atual.strftime('%d/%m/%Y')}** ({DIAS_SEMANA_PT[data_atual.weekday()]})")
 
-    # Busca registro de KM do dia selecionado
-    turno_dia = df_turnos_km[df_turnos_km["data"].dt.date == data_atual]
-    km_ini_gravado = turno_dia["km_inicial"].values[0] if not turno_dia.empty and pd.notnull(turno_dia["km_inicial"].values[0]) else None
-    km_fim_gravado = turno_dia["km_final"].values[0] if not turno_dia.empty and pd.notnull(turno_dia["km_final"].values[0]) else None
-    km_rod_gravado = turno_dia["km_rodado"].values[0] if not turno_dia.empty and pd.notnull(turno_dia["km_rodado"].values[0]) else None
+    # Filtro blindado para verificação do dia
+    if not df_turnos_km.empty:
+        turno_dia = df_turnos_km[df_turnos_km["data"].dt.date == data_atual]
+        km_ini_gravado = turno_dia["km_inicial"].values[0] if not turno_dia.empty and pd.notnull(turno_dia["km_inicial"].values[0]) else None
+        km_fim_gravado = turno_dia["km_final"].values[0] if not turno_dia.empty and pd.notnull(turno_dia["km_final"].values[0]) else None
+        km_rod_gravado = turno_dia["km_rodado"].values[0] if not turno_dia.empty and pd.notnull(turno_dia["km_rodado"].values[0]) else None
+    else:
+        km_ini_gravado = None
+        km_fim_gravado = None
+        km_rod_gravado = None
 
     # PASSO 1: INÍCIO DO DIA (KM INICIAL)
     st.markdown("#### 1️⃣ Início do Turno: Quilometragem Inicial")
@@ -456,7 +471,6 @@ with tab_turno:
     st.caption("Preencha o KM final e os valores do seu dia. Deixe zerado ou vazio o que não realizou.")
 
     with st.form("form_fechamento_turno"):
-        # Campos de Quilometragem
         st.markdown("**Quilometragem:**")
         col_km1, col_km2 = st.columns(2)
         with col_km1:
@@ -501,7 +515,6 @@ with tab_turno:
             else:
                 k_rod_calc = None
 
-            # Monta lista de lançamentos preenchidos
             itens_para_gravar = []
             mapa_receitas = [
                 ("Uber sem pedágios", v_uber),
@@ -622,9 +635,16 @@ else:
     else:
         d_inicio, d_fim = min_base, max_base
 
-# Filtro de registros financeiros e de quilometragem
-df_f = df_completo[(df_completo["data"].dt.date >= d_inicio) & (df_completo["data"].dt.date <= d_fim)].copy()
-df_km_f = df_turnos_km[(df_turnos_km["data"].dt.date >= d_inicio) & (df_turnos_km["data"].dt.date <= d_fim)].copy()
+# Filtro com verificação de dataframe vazio
+if not df_completo.empty:
+    df_f = df_completo[(df_completo["data"].dt.date >= d_inicio) & (df_completo["data"].dt.date <= d_fim)].copy()
+else:
+    df_f = pd.DataFrame(columns=["id", "data", "tipo", "categoria", "descricao", "valor"])
+
+if not df_turnos_km.empty:
+    df_km_f = df_turnos_km[(df_turnos_km["data"].dt.date >= d_inicio) & (df_turnos_km["data"].dt.date <= d_fim)].copy()
+else:
+    df_km_f = pd.DataFrame(columns=["data", "km_inicial", "km_final", "km_rodado"])
 
 tot_rec = df_f[df_f["tipo"] == "Receita"]["valor"].sum() if not df_f.empty else 0.0
 tot_desp = df_f[df_f["tipo"] == "Despesa"]["valor"].sum() if not df_f.empty else 0.0
