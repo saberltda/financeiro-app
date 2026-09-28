@@ -19,7 +19,7 @@ FUSO_SP = ZoneInfo("America/Sao_Paulo")
 def obter_data_hoje():
     return datetime.now(FUSO_SP).date()
 
-# Estilização visual moderna e compacta para celular
+# Estilização visual moderna e compacta para telemóvel / mobile
 st.markdown("""
 <style>
     div[data-testid="stMetricValue"] > div {
@@ -59,15 +59,19 @@ def get_db_engine():
 
 engine = get_db_engine()
 
-# --- SISTEMA DE AUTENTICAÇÃO MULTIUSUÁRIO VIA BANCO DE DADOS ---
+# --- SISTEMA DE AUTENTICAÇÃO MULTI-UTILIZADOR VIA BASE DE DADOS ---
 def autenticar_usuario_db(email_digitado, senha_digitada):
     try:
         with engine.connect() as conn:
+            # Valida senhas com hash pgcrypto ou texto direto enviado via webhook
             query = text("""
                 SELECT id, email, nome, ativo 
                 FROM usuarios 
                 WHERE LOWER(email) = LOWER(:email) 
-                  AND senha_hash = crypt(:senha, senha_hash)
+                  AND (
+                      senha_hash = crypt(:senha, senha_hash)
+                      OR senha_hash = :senha
+                  )
                 LIMIT 1;
             """)
             result = conn.execute(query, {
@@ -98,33 +102,33 @@ def verificar_login():
     with col_centro:
         st.markdown("<div style='height: 40px;'></div>", unsafe_allow_html=True)
         st.markdown("### 🔒 Acesso ao Sistema")
-        st.caption("Entre com seu e-mail e senha cadastrados para acessar o seu painel.")
+        st.caption("Introduza o seu e-mail e palavra-passe registados para aceder ao painel.")
 
         with st.form("form_login"):
             email_input = st.text_input("E-mail", placeholder="seu_email@exemplo.com").strip().lower()
-            senha_input = st.text_input("Senha", type="password", placeholder="••••••••")
+            senha_input = st.text_input("Palavra-passe", type="password", placeholder="••••••••")
             btn_entrar = st.form_submit_button("🔓 Entrar", use_container_width=True, type="primary")
 
             if btn_entrar:
                 if not email_input or not senha_input:
-                    st.error("Por favor, preencha o e-mail e a senha.")
+                    st.error("Por favor, preencha o e-mail e a palavra-passe.")
                 else:
                     dados_user = autenticar_usuario_db(email_input, senha_input)
                     if dados_user:
                         if not dados_user["ativo"]:
-                            st.error("⛔ Sua assinatura está inativa ou cancelada. Regularize seu acesso para continuar.")
+                            st.error("⛔ A sua subscrição está inativa ou cancelada. Regularize o acesso para continuar.")
                         else:
                             st.session_state["usuario_logado"] = dados_user
                             st.rerun()
                     else:
-                        st.error("E-mail ou senha incorretos. Verifique suas credenciais.")
+                        st.error("E-mail ou palavra-passe incorretos. Verifique as suas credenciais.")
 
     return False
 
 if not verificar_login():
     st.stop()
 
-# Dados do usuário logado
+# Dados do utilizador logado
 usuario_atual = st.session_state["usuario_logado"]
 USUARIO_ID = usuario_atual["id"]
 NOME_EXIBICAO = usuario_atual["nome"] if usuario_atual["nome"] else usuario_atual["email"]
@@ -133,7 +137,7 @@ NOME_EXIBICAO = usuario_atual["nome"] if usuario_atual["nome"] else usuario_atua
 c_titulo, c_sair = st.columns([4, 1.4])
 with c_titulo:
     st.title("🚗 Gestão de Turnos & Finanças")
-    st.caption(f"👤 Conectado como: **{NOME_EXIBICAO}**")
+    st.caption(f"👤 Ligado como: **{NOME_EXIBICAO}**")
 with c_sair:
     st.markdown("<div style='height: 18px;'></div>", unsafe_allow_html=True)
     if st.button("🚪 Sair da Conta", use_container_width=True):
@@ -191,7 +195,7 @@ def converter_km_inteiro(texto):
     except ValueError:
         return None
 
-# Operações de Banco de Dados com Filtro por Usuário e Cache
+# Operações de Base de Dados com Filtro por Utilizador
 @st.cache_data(ttl=600)
 def carregar_dados(user_id):
     with engine.connect() as conn:
@@ -337,7 +341,7 @@ def gerar_dossie_ia(df_periodo, df_km_periodo, d_ini, d_end):
         "## INSTRUÇÕES PARA A INTELIGÊNCIA ARTIFICIAL",
         "Você é um consultor financeiro e de estratégia operacional para motoristas de aplicativo.",
         "Analise os dados financeiros e MÉTRICAS DE QUILOMETRAGEM (R$/km, Custo/km e Lucro/km) para apontar como aumentar o lucro.",
-        "Nota: O motorista registra múltiplos turnos por dia, descartando KMs de uso particular entre as pausas.",
+        "Nota: O motorista regista múltiplos turnos por dia, descartando KMs de uso particular entre as pausas.",
         "",
         "### REGRAS CONTÁBEIS IMPORTANTES:",
         "- **99 com pedágios:** Já embute o reembolso dos pedágios.",
@@ -373,7 +377,7 @@ def gerar_dossie_ia(df_periodo, df_km_periodo, d_ini, d_end):
 
     return "\n".join(prompt_linhas)
 
-# Carregamento filtrado pelo usuário logado
+# Carregamento filtrado pelo utilizador atual
 df_completo = carregar_dados(USUARIO_ID)
 df_turnos_km = carregar_turnos_km(USUARIO_ID)
 
@@ -390,7 +394,7 @@ if "date_ver" not in st.session_state:
 # Modal de Edição de Turno
 @st.dialog("✏️ Editar Turno de KM")
 def modal_editar_turno(turno_id, km_ini_atual, km_fim_atual):
-    st.write(f"Editar Odômetros do **Turno #{turno_id}**:")
+    st.write(f"Editar Odómetros do **Turno #{turno_id}**:")
     txt_ini = st.text_input("KM Inicial:", value=str(int(km_ini_atual)) if km_ini_atual else "")
     txt_fim = st.text_input("KM Final (opcional):", value=str(int(km_fim_atual)) if km_fim_atual else "")
     
@@ -415,7 +419,7 @@ def modal_editar_turno(turno_id, km_ini_atual, km_fim_atual):
 @st.dialog("✏️ Editar Lançamento do Dia")
 def modal_editar_lancamento_dia(data_ref, lancamentos_dia_df):
     if lancamentos_dia_df.empty:
-        st.info("Nenhum lançamento registrado nesta data.")
+        st.info("Nenhum lançamento registado nesta data.")
         return
 
     mapa_itens = {}
@@ -433,7 +437,7 @@ def modal_editar_lancamento_dia(data_ref, lancamentos_dia_df):
         lista_rotulos.append(rotulo)
 
     rotulo_selecionado = st.selectbox(
-        "Selecione o registro para editar (apenas com registro):", 
+        "Selecione o registo para editar (apenas com registo ativo):", 
         lista_rotulos, 
         key="sel_edicao_parcial_dia"
     )
@@ -541,9 +545,9 @@ with tab_operacao:
         st.session_state["data_operacao"] = dt_sel
 
     data_atual = st.session_state["data_operacao"]
-    st.caption(f"🗓️ Gerenciando dia: **{data_atual.strftime('%d/%m/%Y')}** ({DIAS_SEMANA_PT[data_atual.weekday()]})")
+    st.caption(f"🗓️ A gerir o dia: **{data_atual.strftime('%d/%m/%Y')}** ({DIAS_SEMANA_PT[data_atual.weekday()]})")
 
-    # Filtra turnos e lançamentos do dia
+    # Filtra turnos e lançamentos do dia selecionado
     turnos_do_dia = df_turnos_km[df_turnos_km["data"].dt.date == data_atual].sort_values("id") if not df_turnos_km.empty else pd.DataFrame()
     turno_aberto = turnos_do_dia[turnos_do_dia["km_final"].isnull()] if not turnos_do_dia.empty else pd.DataFrame()
     tem_turno_aberto = not turno_aberto.empty
@@ -554,10 +558,10 @@ with tab_operacao:
     # --- SEÇÃO 1: TURNOS DE QUILOMETRAGEM ---
     st.markdown("---")
     st.markdown("#### 🚗 1. Turnos de Trabalho (Quilometragem)")
-    st.caption("Abra um turno ao começar a trabalhar e feche ao pausar para atividades particulares.")
+    st.caption("Inicie um turno ao começar a trabalhar e feche ao pausar para atividades particulares.")
 
     if not turnos_do_dia.empty:
-        st.markdown(f"**Turnos de trabalho no dia:** (Soma acumulada: **{formata_km(total_km_dia)}**)")
+        st.markdown(f"**Turnos de trabalho no dia:** (Total acumulado: **{formata_km(total_km_dia)}**)")
         idx_t = 1
         for _, t in turnos_do_dia.iterrows():
             t_id = int(t["id"])
@@ -570,7 +574,7 @@ with tab_operacao:
                 if k_fim is not None:
                     st.markdown(f"✅ **Turno {idx_t}:** {k_ini:,} km ➔ {k_fim:,} km | **+{k_rod} km rodados**".replace(",", "."))
                 else:
-                    st.markdown(f"⏳ **Turno {idx_t} (EM ANDAMENTO):** Aberto em **{k_ini:,} km**".replace(",", "."))
+                    st.markdown(f"⏳ **Turno {idx_t} (EM CURSO):** Aberto em **{k_ini:,} km**".replace(",", "."))
             with col_t_edit:
                 if st.button("✏️", key=f"btn_ed_turno_{t_id}", use_container_width=True):
                     modal_editar_turno(t_id, k_ini, k_fim)
@@ -590,7 +594,7 @@ with tab_operacao:
         with st.form("form_fechar_turno"):
             c_kf, c_btnf = st.columns([2, 1])
             with c_kf:
-                input_km_fim = st.text_input("Odômetro ao encerrar este turno:", placeholder=f"Ex: {km_ini_ativo + 80}")
+                input_km_fim = st.text_input("Odómetro ao encerrar este turno:", placeholder=f"Ex: {km_ini_ativo + 80}")
             with c_btnf:
                 st.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
                 btn_fechar_t = st.form_submit_button("🏁 Pausar / Fechar Turno", type="primary", use_container_width=True)
@@ -598,7 +602,7 @@ with tab_operacao:
             if btn_fechar_t:
                 val_kf = converter_km_inteiro(input_km_fim)
                 if val_kf is None or val_kf <= 0:
-                    st.error("Digite um KM final válido.")
+                    st.error("Indique um KM final válido.")
                 elif val_kf < km_ini_ativo:
                     st.error(f"O KM final não pode ser menor que o inicial ({km_ini_ativo:,} km).".replace(",", "."))
                 else:
@@ -612,7 +616,7 @@ with tab_operacao:
             with c_ki:
                 ultimo_km = int(turnos_do_dia["km_final"].dropna().iloc[-1]) if not turnos_do_dia.empty and not turnos_do_dia["km_final"].dropna().empty else ""
                 placeholder_sug = f"Ex: {ultimo_km}" if ultimo_km else "Ex: 85420"
-                input_km_ini = st.text_input("Odômetro ao começar este turno:", value=str(ultimo_km) if ultimo_km else "", placeholder=placeholder_sug)
+                input_km_ini = st.text_input("Odómetro ao começar este turno:", value=str(ultimo_km) if ultimo_km else "", placeholder=placeholder_sug)
             with c_btni:
                 st.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
                 btn_abrir_t = st.form_submit_button("🟢 Iniciar Novo Turno", type="primary", use_container_width=True)
@@ -620,7 +624,7 @@ with tab_operacao:
             if btn_abrir_t:
                 val_ki = converter_km_inteiro(input_km_ini)
                 if val_ki is None or val_ki <= 0:
-                    st.error("Informe um KM inicial inteiro e válido.")
+                    st.error("Indique um KM inicial inteiro e válido.")
                 else:
                     abrir_novo_turno(data_atual, val_ki, USUARIO_ID)
                     st.session_state["msg_sucesso"] = f"Turno iniciado em {val_ki:,} km!".replace(",", ".")
@@ -629,7 +633,7 @@ with tab_operacao:
     # --- SEÇÃO 2: LANÇAMENTO RÁPIDO PARCIAL ---
     st.markdown("---")
     st.markdown("#### ⚡ 2. Lançamento Rápido no Dia (Despesas ou Ganhos)")
-    st.caption("Abasteceu, lavou o carro ou recebeu uma corrida avulsa? Salve aqui imediatamente a qualquer momento.")
+    st.caption("Abasteceu, lavou o veículo ou recebeu uma corrida avulsa? Salve aqui imediatamente.")
 
     col_sel_tipo, col_sel_cat = st.columns(2)
     with col_sel_tipo:
@@ -659,7 +663,7 @@ with tab_operacao:
         if btn_salvar_parcial:
             v_calc = converter_valor(val_avulso_str)
             if v_calc <= 0:
-                st.error("Informe um valor maior que zero.")
+                st.error("Indique um valor superior a zero.")
             elif cat_avulsa_sel == "Outro" and not cat_final_avulsa:
                 st.error("Indique o nome da categoria 'Outro'.")
             else:
@@ -671,7 +675,7 @@ with tab_operacao:
     # --- SEÇÃO 3: FECHAMENTO GERAL DO DIA ---
     st.markdown("---")
     st.markdown("#### 🏁 3. Fechamento Geral do Dia (Checklist Final)")
-    st.caption("Consolide o encerramento do seu dia: confira os KMs totais, itens já salvos e lance o que ficou pendente.")
+    st.caption("Consolide o encerramento do dia: valide os KMs totais, itens já salvos e lance os pendentes.")
 
     col_km_soma1, col_km_soma2 = st.columns([2.5, 1])
     with col_km_soma1:
@@ -703,7 +707,7 @@ with tab_operacao:
             if cat in categorias_lancadas_hoje:
                 dados_cat = categorias_lancadas_hoje[cat]
                 st.text_input(
-                    f"✔️ {cat} (Já Registrado - Travado):",
+                    f"✔️ {cat} (Já Registrado - Bloqueado):",
                     value=f"{formata_real(dados_cat['valor'])} - {dados_cat['descricao']}" if dados_cat['descricao'] else formata_real(dados_cat['valor']),
                     disabled=True,
                     key=f"lock_rec_{cat}"
@@ -729,7 +733,7 @@ with tab_operacao:
             if cat in categorias_lancadas_hoje:
                 dados_cat = categorias_lancadas_hoje[cat]
                 st.text_input(
-                    f"✔️ {cat} (Já Registrado - Travado):",
+                    f"✔️ {cat} (Já Registrado - Bloqueado):",
                     value=f"{formata_real(dados_cat['valor'])} - {dados_cat['descricao']}" if dados_cat['descricao'] else formata_real(dados_cat['valor']),
                     disabled=True,
                     key=f"lock_desp_{cat}"
@@ -771,14 +775,14 @@ with tab_operacao:
                 novos_itens.append({"tipo": "Despesa", "categoria": "Outro", "descricao": obs_outro_fechamento.strip(), "valor": v_outro_num})
 
             if not novos_itens and not categorias_lancadas_hoje and total_km_dia == 0:
-                st.warning("Preencha ao menos uma categoria pendente para concluir o fechamento.")
+                st.warning("Preencha pelo menos uma categoria pendente para concluir o fecho.")
             else:
                 if novos_itens:
                     salvar_fechamento_em_lote(data_atual, novos_itens, USUARIO_ID)
                 st.session_state["msg_sucesso"] = f"Fechamento do dia {data_atual.strftime('%d/%m/%Y')} concluído com sucesso!"
                 st.rerun()
 
-    # Painel dos itens registrados hoje com botão de edição dinâmico
+    # Painel dos itens registados hoje com botão de edição dinâmico
     if not lancamentos_hoje.empty:
         col_cab_hoje, col_btn_ed_hoje = st.columns([4, 1.5])
         with col_cab_hoje:
@@ -797,7 +801,7 @@ with tab_operacao:
 # ==============================================================
 with tab_gerenciar:
     if df_completo.empty:
-        st.info("Nenhum lançamento financeiro registrado.")
+        st.info("Nenhum lançamento financeiro registado.")
     else:
         busca = st.text_input("🔍 Pesquisar lançamentos:", placeholder="Filtre por categoria ou observação...").lower().strip()
         df_lista = df_completo.copy()
@@ -807,7 +811,7 @@ with tab_gerenciar:
                 df_lista["descricao"].str.lower().str.contains(busca, na=False)
             ]
 
-        st.caption(f"Exibindo {min(len(df_lista), 40)} de {len(df_lista)} lançamentos")
+        st.caption(f"A exibir {min(len(df_lista), 40)} de {len(df_lista)} lançamentos")
 
         for _, row in df_lista.head(40).iterrows():
             item_id = int(row["id"])
@@ -987,7 +991,7 @@ if not df_f.empty:
 else:
     st.info("Nenhum lançamento financeiro no período selecionado.")
 
-# --- GRÁFICOS: PIZZAS PRIMEIRO, BARRAS NO FINAL ---
+# --- GRÁFICOS: DISTRIBUIÇÃO E EVOLUÇÃO ---
 if not df_f.empty:
     st.markdown("---")
     st.markdown("#### 📊 Distribuição por Origem e Custo")
