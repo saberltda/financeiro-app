@@ -168,7 +168,7 @@ if "db_inicializado" not in st.session_state:
         st.error(f"Erro de conexão com o banco de dados: {str(e)}")
         st.stop()
 
-# Cache de alta velocidade para leitura dos dados com migração/padronização em tempo de leitura
+# Cache de alta velocidade para leitura dos dados com padronização em tempo de leitura
 @st.cache_data(ttl=600)
 def carregar_dados():
     with engine.connect() as conn:
@@ -176,7 +176,6 @@ def carregar_dados():
     if not df.empty:
         df["data"] = pd.to_datetime(df["data"])
         df["valor"] = df["valor"].astype(float)
-        # Padroniza registros legados gravados como "Uber" e "99"
         df["categoria"] = df["categoria"].replace({
             "Uber": "Uber sem pedágios",
             "99": "99 com pedágios"
@@ -253,7 +252,7 @@ def gerar_dossie_ia(df_periodo, d_ini, d_end):
         "Analise minuciosamente os dados operacionais abaixo e forneça um diagnóstico estratégico focado em aumentar o lucro líquido.",
         "",
         "### REGRAS CONTÁBEIS IMPORTANTES DESTA OPERAÇÃO (LEIA COM ATENÇÃO):",
-        "- **99 com pedágios:** Os valores lançados nesta categoria JÁ CONTÊMPLAM e trazem embutidos o reembolso dos pedágios das viagens.",
+        "- **99 com pedágios:** Os valores lançados nesta categoria JÁ CONTEMPLAM e trazem embutidos o reembolso dos pedágios das viagens.",
         "- **Uber sem pedágios:** Os valores lançados nesta categoria NÃO INCLUEM pedágios. Os reembolsos de pedágios da Uber são apurados à parte e lançados separadamente na categoria 'Pedágio Uber'.",
         "- **SemParar do dia / Pedágios:** Os custos com a tag de pedágio constam em 'SemParar do dia'. Não deduza pedágios duas vezes e leve em consideração essas particularidades ao comparar a rentabilidade líquida da Uber vs. 99.",
         "",
@@ -633,7 +632,7 @@ else:
 
         st.caption(f"📅 **{dias_trabalhados}** dia(s) trabalhado(s) | Média líquida: **{formata_real(media_lucro_dia)} / dia**")
 
-        # --- SEÇÃO DA TABELA (COM VÍRGULA NAS CASAS DECIMAIS) ---
+        # --- SEÇÃO DA TABELA (COLUNAS AJUSTADAS SEM CORTAR TEXTO) ---
         st.markdown("---")
         st.markdown("#### 📋 Lançamentos do Período")
 
@@ -706,15 +705,16 @@ else:
             df_tabela["data_formatada"] = df_tabela["data"].dt.strftime("%d/%m/%Y")
             df_tabela["valor_formatado"] = df_tabela["valor"].apply(lambda v: f"R$ {v:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
             
+            # Larguras ajustadas: Categoria com 'medium' para acomodar 'SemParar do dia' e textos longos
             st.dataframe(
                 df_tabela[["id", "data_formatada", "tipo", "categoria", "valor_formatado", "descricao"]],
                 column_config={
-                    "id": "ID",
-                    "data_formatada": "Data",
-                    "tipo": "Tipo",
-                    "categoria": "Categoria",
-                    "valor_formatado": "Valor",
-                    "descricao": "Observação"
+                    "id": st.column_config.NumberColumn("ID", width="small"),
+                    "data_formatada": st.column_config.TextColumn("Data", width="small"),
+                    "tipo": st.column_config.TextColumn("Tipo", width="small"),
+                    "categoria": st.column_config.TextColumn("Categoria", width="medium"),
+                    "valor_formatado": st.column_config.TextColumn("Valor", width="small"),
+                    "descricao": st.column_config.TextColumn("Observação", width="large")
                 },
                 use_container_width=True,
                 hide_index=True
