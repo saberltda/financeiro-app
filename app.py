@@ -5,6 +5,7 @@ from zoneinfo import ZoneInfo
 import plotly.express as px
 from sqlalchemy import create_engine, text
 import streamlit.components.v1 as components
+import secrets
 
 st.set_page_config(
     page_title="Controle Motorista Pro", 
@@ -19,7 +20,7 @@ FUSO_SP = ZoneInfo("America/Sao_Paulo")
 def obter_data_hoje():
     return datetime.now(FUSO_SP).date()
 
-# Estilização visual moderna e compacta para telemóvel / mobile
+# Estilização visual moderna e compacta para celular
 st.markdown("""
 <style>
     div[data-testid="stMetricValue"] > div {
@@ -59,12 +60,51 @@ def get_db_engine():
 
 engine = get_db_engine()
 
-# --- SISTEMA DE AUTENTICAÇÃO COM SUPORTE A PIN DE ACESSO RÁPIDO ---
+# --- SISTEMA DE AUTENTICAÇÃO COM LINK ÚNICO E SENHA ---
+def garantir_chave_acesso(user_id):
+    nova_chave = secrets.token_urlsafe(20)
+    try:
+        with engine.begin() as conn:
+            conn.execute(text("""
+                UPDATE usuarios 
+                SET chave_acesso = :k 
+                WHERE id = :uid AND chave_acesso IS NULL;
+            """), {"k": nova_chave, "uid": user_id})
+        return nova_chave
+    except Exception:
+        return None
+
+def buscar_usuario_por_chave(chave_acesso):
+    if not chave_acesso:
+        return None
+    try:
+        with engine.connect() as conn:
+            query = text("""
+                SELECT id, email, nome, ativo, COALESCE(primeiro_acesso, FALSE) AS primeiro_acesso, chave_acesso
+                FROM usuarios 
+                WHERE chave_acesso = :chave
+                LIMIT 1;
+            """)
+            result = conn.execute(query, {"chave": chave_acesso.strip()}).fetchone()
+            if result:
+                return {
+                    "id": result[0],
+                    "email": result[1],
+                    "nome": result[2],
+                    "ativo": bool(result[3]),
+                    "primeiro_acesso": bool(result[4]),
+                    "chave_acesso": result[5]
+                }
+            return None
+    except Exception as e:
+        st.error(f"Erro ao validar chave de acesso: {str(e)}")
+        return None
+
 def autenticar_usuario_senha(email_digitado, senha_digitada):
     try:
         with engine.connect() as conn:
             query = text("""
-                SELECT id, email, nome, ativo, COALESCE(primeiro_acesso, FALSE) AS primeiro_acesso, pin_acesso
+                SELECT id, email, nome, ativo, COALESCE(primeiro_acesso, FALSE) AS primeiro_acesso, chave_acesso
                 FROM usuarios 
                 WHERE LOWER(email) = LOWER(:email) 
                   AND (
@@ -79,59 +119,21 @@ def autenticar_usuario_senha(email_digitado, senha_digitada):
             }).fetchone()
             
             if result:
-                return {
+                user_dict = {
                     "id": result[0],
                     "email": result[1],
                     "nome": result[2],
                     "ativo": bool(result[3]),
                     "primeiro_acesso": bool(result[4]),
-                    "pin_acesso": result[5]
+                    "chave_acesso": result[5]
                 }
+                if not user_dict["chave_acesso"]:
+                    user_dict["chave_acesso"] = garantir_chave_acesso(user_dict["id"])
+                return user_dict
             return None
     except Exception as e:
         st.error(f"Erro ao verificar credenciais: {str(e)}")
         return None
-
-def autenticar_usuario_pin(email_digitado, pin_digitado):
-    try:
-        with engine.connect() as conn:
-            query = text("""
-                SELECT id, email, nome, ativo, COALESCE(primeiro_acesso, FALSE) AS primeiro_acesso, pin_acesso
-                FROM usuarios 
-                WHERE LOWER(email) = LOWER(:email) 
-                  AND pin_acesso = :pin
-                LIMIT 1;
-            """)
-            result = conn.execute(query, {
-                "email": email_digitado.strip(),
-                "pin": pin_digitado.strip()
-            }).fetchone()
-            
-            if result:
-                return {
-                    "id": result[0],
-                    "email": result[1],
-                    "nome": result[2],
-                    "ativo": bool(result[3]),
-                    "primeiro_acesso": bool(result[4]),
-                    "pin_acesso": result[5]
-                }
-            return None
-    except Exception as e:
-        st.error(f"Erro ao autenticar com PIN: {str(e)}")
-        return None
-
-def atualizar_pin_usuario(user_id, novo_pin):
-    try:
-        with engine.begin() as conn:
-            conn.execute(text("""
-                UPDATE usuarios 
-                SET pin_acesso = :pin
-                WHERE id = :uid;
-            """), {"pin": novo_pin.strip(), "uid": user_id})
-        return True, "PIN cadastrado com sucesso!"
-    except Exception as e:
-        return False, f"Erro ao atualizar PIN: {str(e)}"
 
 def atualizar_senha_primeiro_acesso(user_id, nova_senha):
     try:
@@ -143,9 +145,9 @@ def atualizar_senha_primeiro_acesso(user_id, nova_senha):
                 WHERE id = :uid;
             """)
             conn.execute(up_query, {"uid": user_id, "nova_senha": nova_senha})
-            return True, "Palavra-passe cadastrada com sucesso!"
+            return True, "Senha cadastrada com sucesso!"
     except Exception as e:
-        return False, f"Erro ao definir nova palavra-passe: {str(e)}"
+        return False, f"Erro ao definir nova senha: {str(e)}"
 
 def atualizar_senha_usuario(user_id, senha_atual, nova_senha):
     try:
@@ -160,7 +162,7 @@ def atualizar_senha_usuario(user_id, senha_atual, nova_senha):
             """)
             valido = conn.execute(check_query, {"uid": user_id, "senha_atual": senha_atual}).fetchone()
             if not valido:
-                return False, "A palavra-passe atual informada está incorreta."
+                return False, "A senha atual informada está incorreta."
 
             up_query = text("""
                 UPDATE usuarios 
@@ -169,170 +171,158 @@ def atualizar_senha_usuario(user_id, senha_atual, nova_senha):
                 WHERE id = :uid;
             """)
             conn.execute(up_query, {"uid": user_id, "nova_senha": nova_senha})
-            return True, "Palavra-passe alterada com sucesso!"
+            return True, "Senha alterada com sucesso!"
     except Exception as e:
-        return False, f"Erro ao atualizar palavra-passe: {str(e)}"
+        return False, f"Erro ao atualizar senha: {str(e)}"
 
 def verificar_login():
     if "usuario_logado" not in st.session_state:
         st.session_state["usuario_logado"] = None
 
+    # 1. VERIFICAÇÃO AUTOMÁTICA VIA LINK ÚNICO (?acesso=chave)
+    chave_url = st.query_params.get("acesso")
+    if chave_url and st.session_state["usuario_logado"] is None:
+        user_chave = buscar_usuario_por_chave(chave_url)
+        if user_chave:
+            if user_chave["ativo"]:
+                st.session_state["usuario_logado"] = user_chave
+                return True
+            else:
+                st.error("⛔ Sua assinatura está inativa. Regularize na plataforma de compra.")
+                st.stop()
+        else:
+            st.warning("⚠️ Link de acesso inválido ou expirado. Faça login manualmente.")
+            st.query_params.clear()
+
     if st.session_state["usuario_logado"] is not None:
         return True
 
+    # 2. TELA DE LOGIN CONVENCIONAL
     col_vazia1, col_centro, col_vazia2 = st.columns([1, 2.5, 1])
     with col_centro:
-        st.markdown("<div style='height: 30px;'></div>", unsafe_allow_html=True)
+        st.markdown("<div style='height: 40px;'></div>", unsafe_allow_html=True)
         st.markdown("### 🔒 Acesso ao Sistema")
-        
-        modo_login = st.radio("Método de entrada:", ["⚡ PIN de Acesso Rápido", "🔑 Palavra-passe Completa"], horizontal=True)
+        st.caption("Introduza seu e-mail e senha cadastrados para entrar.")
 
-        if modo_login == "⚡ PIN de Acesso Rápido":
-            st.caption("Aceda em poucos segundos utilizando o seu e-mail e o PIN numérico.")
-            with st.form("form_login_pin"):
-                email_pin = st.text_input("E-mail registado:", placeholder="seu_email@exemplo.com").strip().lower()
-                pin_input = st.text_input("PIN (4 a 6 dígitos):", type="password", placeholder="••••", max_chars=6)
-                btn_pin = st.form_submit_button("⚡ Entrar Rapidamente", use_container_width=True, type="primary")
+        with st.form("form_login"):
+            email_input = st.text_input("E-mail", placeholder="seu_email@exemplo.com").strip().lower()
+            senha_input = st.text_input("Senha", type="password", placeholder="••••••••")
+            btn_entrar = st.form_submit_button("🔓 Entrar", use_container_width=True, type="primary")
 
-                if btn_pin:
-                    if not email_pin or not pin_input:
-                        st.error("Preencha o e-mail e o PIN.")
-                    else:
-                        dados = autenticar_usuario_pin(email_pin, pin_input)
-                        if dados:
-                            if not dados["ativo"]:
-                                st.error("⛔ A sua subscrição está inativa. Contacte o suporte.")
-                            else:
-                                st.session_state["usuario_logado"] = dados
-                                st.rerun()
+            if btn_entrar:
+                if not email_input or not senha_input:
+                    st.error("Por favor, preencha o e-mail e a senha.")
+                else:
+                    dados_user = autenticar_usuario_senha(email_input, senha_input)
+                    if dados_user:
+                        if not dados_user["ativo"]:
+                            st.error("⛔ A sua assinatura está inativa. Regularize o acesso para continuar.")
                         else:
-                            st.error("E-mail ou PIN incorretos. Caso ainda não tenha criado um PIN, aceda pela opção 'Palavra-passe Completa'.")
-        else:
-            st.caption("Introduza o seu e-mail e a palavra-passe completa registada.")
-            with st.form("form_login_senha"):
-                email_input = st.text_input("E-mail:", placeholder="seu_email@exemplo.com").strip().lower()
-                senha_input = st.text_input("Palavra-passe:", type="password", placeholder="••••••••")
-                btn_entrar = st.form_submit_button("🔓 Entrar", use_container_width=True, type="primary")
-
-                if btn_entrar:
-                    if not email_input or not senha_input:
-                        st.error("Preencha o e-mail e a palavra-passe.")
+                            st.session_state["usuario_logado"] = dados_user
+                            # Anexa a chave única na URL para salvar nos favoritos/tela inicial
+                            if dados_user.get("chave_acesso"):
+                                st.query_params["acesso"] = dados_user["chave_acesso"]
+                            st.rerun()
                     else:
-                        dados_user = autenticar_usuario_senha(email_input, senha_input)
-                        if dados_user:
-                            if not dados_user["ativo"]:
-                                st.error("⛔ A sua subscrição está inativa. Contacte o suporte.")
-                            else:
-                                st.session_state["usuario_logado"] = dados_user
-                                st.rerun()
-                        else:
-                            st.error("E-mail ou palavra-passe incorretos.")
+                        st.error("E-mail ou senha incorretos. Verifique suas credenciais.")
 
     return False
 
 if not verificar_login():
     st.stop()
 
-# Utilizador atualmente autenticado
+# Usuário logado
 usuario_atual = st.session_state["usuario_logado"]
 USUARIO_ID = usuario_atual["id"]
 NOME_EXIBICAO = usuario_atual["nome"] if usuario_atual["nome"] else usuario_atual["email"]
+CHAVE_ACESSO = usuario_atual.get("chave_acesso", "")
+
+# Garante que o parâmetro de acesso continue na URL durante a navegação
+if CHAVE_ACESSO and st.query_params.get("acesso") != CHAVE_ACESSO:
+    st.query_params["acesso"] = CHAVE_ACESSO
 
 # --- BLOQUEIO E TELA OBRIGATÓRIA DE PRIMEIRO ACESSO ---
 if usuario_atual.get("primeiro_acesso", False):
     col_v1, col_centro, col_v2 = st.columns([1, 2.5, 1])
     with col_centro:
         st.markdown("<div style='height: 30px;'></div>", unsafe_allow_html=True)
-        st.markdown("### 🛡️ Defina a sua Palavra-passe e PIN Pessoal")
-        st.info("👋 Olá! Este é o seu primeiro acesso. Defina a sua nova palavra-passe e crie um PIN simples para entrar rapidamente no telemóvel.")
+        st.markdown("### 🛡️ Defina sua Senha Pessoal")
+        st.info("👋 Olá! Este é o seu primeiro acesso. Defina uma senha segura para sua conta.")
 
         with st.form("form_primeiro_acesso"):
-            nova_senha_pa = st.text_input("Nova Palavra-passe:", type="password", placeholder="Mínimo 6 caracteres")
-            conf_senha_pa = st.text_input("Confirme a Nova Palavra-passe:", type="password", placeholder="Repita a palavra-passe")
-            novo_pin_pa = st.text_input("PIN de Acesso Rápido (4 dígitos numéricos):", type="password", placeholder="Ex: 1234", max_chars=6)
-            btn_salvar_pa = st.form_submit_button("💾 Salvar Credenciais e Iniciar", type="primary", use_container_width=True)
+            nova_senha_pa = st.text_input("Nova Senha:", type="password", placeholder="Mínimo 6 caracteres")
+            conf_senha_pa = st.text_input("Confirme a Nova Senha:", type="password", placeholder="Repita a nova senha")
+            btn_salvar_pa = st.form_submit_button("💾 Salvar Senha e Liberar Acesso", type="primary", use_container_width=True)
 
             if btn_salvar_pa:
                 if not nova_senha_pa or not conf_senha_pa:
-                    st.error("Preencha a nova palavra-passe e a respetiva confirmação.")
+                    st.error("Preencha todos os campos.")
                 elif len(nova_senha_pa) < 6:
-                    st.error("A palavra-passe deve conter pelo menos 6 caracteres.")
+                    st.error("A nova senha deve ter no mínimo 6 caracteres.")
                 elif nova_senha_pa != conf_senha_pa:
-                    st.error("As palavras-passe não coincidem.")
+                    st.error("As senhas digitadas não coincidem.")
                 else:
                     sucesso, msg = atualizar_senha_primeiro_acesso(USUARIO_ID, nova_senha_pa)
                     if sucesso:
-                        if novo_pin_pa.strip():
-                            atualizar_pin_usuario(USUARIO_ID, novo_pin_pa.strip())
                         usuario_atual["primeiro_acesso"] = False
                         st.session_state["usuario_logado"] = usuario_atual
-                        st.session_state["msg_sucesso"] = "Acesso configurado com sucesso! Bem-vindo ao painel."
+                        st.session_state["msg_sucesso"] = "Senha definida com sucesso! Bem-vindo ao painel."
                         st.rerun()
                     else:
                         st.error(msg)
     st.stop()
 
-# Modal para Alteração de PIN
-@st.dialog("⚡ Configurar PIN de Acesso Rápido")
-def modal_configurar_pin(user_id):
-    st.write("Defina um código numérico de 4 a 6 dígitos para aceder rapidamente sem ter de digitar a palavra-passe completa.")
-    with st.form("form_alterar_pin"):
-        novo_pin = st.text_input("Novo PIN Numérico (4 a 6 dígitos):", type="password", placeholder="Ex: 2580", max_chars=6)
-        btn_pin = st.form_submit_button("💾 Salvar PIN", type="primary", use_container_width=True)
+# Modal para Exibir Link Único do Motorista
+@st.dialog("🔗 Seu Link de Acesso Direto")
+def modal_link_direto(chave):
+    st.write("Guarde este link nos favoritos ou adicione à tela de início do seu celular. Com ele, você entra direto sem digitar senha:")
+    link_direto = f"https://seu-app.streamlit.app/?acesso={chave}"
+    st.code(link_direto, language="text")
+    st.caption("📲 **No iPhone ou Android:** Abra este link e clique em 'Adicionar à tela de início' para criar um ícone que abre seu app direto!")
 
-        if btn_pin:
-            if not novo_pin or len(novo_pin.strip()) < 4:
-                st.error("O PIN deve conter entre 4 e 6 números.")
-            else:
-                ok, msg = atualizar_pin_usuario(user_id, novo_pin.strip())
-                if ok:
-                    st.session_state["msg_sucesso"] = "PIN atualizado com sucesso!"
-                    st.rerun()
-                else:
-                    st.error(msg)
-
-# Modal para Alteração Voluntária de Palavra-passe
+# Modal para Alteração de Senha
 @st.dialog("🔑 Alterar Palavra-passe")
 def modal_alterar_senha(user_id):
-    st.write("Crie uma nova palavra-passe de acesso segura.")
+    st.write("Crie uma nova senha de acesso segura para sua conta.")
     with st.form("form_mudar_senha"):
-        s_atual = st.text_input("Palavra-passe Atual:", type="password", placeholder="Palavra-passe atual")
-        s_nova = st.text_input("Nova Palavra-passe:", type="password", placeholder="No mínimo 6 caracteres")
-        s_conf = st.text_input("Confirme a Nova Palavra-passe:", type="password", placeholder="Repita a palavra-passe")
+        s_atual = st.text_input("Senha Atual:", type="password", placeholder="Sua senha atual")
+        s_nova = st.text_input("Nova Senha:", type="password", placeholder="No mínimo 6 caracteres")
+        s_conf = st.text_input("Confirme a Nova Senha:", type="password", placeholder="Repita a nova senha")
         
-        btn_salvar_senha = st.form_submit_button("💾 Atualizar Palavra-passe", type="primary", use_container_width=True)
+        btn_salvar_senha = st.form_submit_button("💾 Atualizar Senha", type="primary", use_container_width=True)
 
         if btn_salvar_senha:
             if not s_atual or not s_nova or not s_conf:
                 st.error("Preencha todos os campos.")
             elif len(s_nova) < 6:
-                st.error("A nova palavra-passe deve ter pelo menos 6 caracteres.")
+                st.error("A nova senha deve ter pelo menos 6 caracteres.")
             elif s_nova != s_conf:
-                st.error("A confirmação não coincide com a nova palavra-passe.")
+                st.error("A confirmação não coincide com a nova senha.")
             else:
                 ok, msg = atualizar_senha_usuario(user_id, s_atual, s_nova)
                 if ok:
-                    st.session_state["msg_sucesso"] = "Palavra-passe atualizada com sucesso!"
+                    st.session_state["msg_sucesso"] = "Senha atualizada com sucesso!"
                     st.rerun()
                 else:
                     st.error(msg)
 
-# --- BARRA SUPERIOR COM IDENTIFICAÇÃO E ATALHOS ---
-c_titulo, c_pin, c_senha, c_sair = st.columns([3.2, 1.2, 1.2, 1.0])
+# --- BARRA SUPERIOR COM IDENTIFICAÇÃO E AÇÕES ---
+c_titulo, c_link, c_senha, c_sair = st.columns([3.0, 1.4, 1.2, 1.0])
 with c_titulo:
     st.title("🚗 Gestão de Turnos & Finanças")
-    st.caption(f"👤 Ligado como: **{NOME_EXIBICAO}**")
-with c_pin:
+    st.caption(f"👤 Conectado como: **{NOME_EXIBICAO}**")
+with c_link:
     st.markdown("<div style='height: 18px;'></div>", unsafe_allow_html=True)
-    if st.button("⚡ PIN", use_container_width=True, help="Configurar PIN rápido"):
-        modal_configurar_pin(USUARIO_ID)
+    if st.button("🔗 Meu Link", use_container_width=True, help="Ver link de acesso direto"):
+        modal_link_direto(CHAVE_ACESSO)
 with c_senha:
     st.markdown("<div style='height: 18px;'></div>", unsafe_allow_html=True)
-    if st.button("🔑 Senha", use_container_width=True, help="Alterar palavra-passe"):
+    if st.button("🔑 Senha", use_container_width=True, help="Alterar senha"):
         modal_alterar_senha(USUARIO_ID)
 with c_sair:
     st.markdown("<div style='height: 18px;'></div>", unsafe_allow_html=True)
     if st.button("🚪 Sair", use_container_width=True):
+        st.query_params.clear()
         st.session_state["usuario_logado"] = None
         st.rerun()
 
@@ -387,7 +377,7 @@ def converter_km_inteiro(texto):
     except ValueError:
         return None
 
-# Operações de Base de Dados com Filtro por Utilizador
+# Operações de Banco de Dados com Filtro por Usuário
 @st.cache_data(ttl=600)
 def carregar_dados(user_id):
     with engine.connect() as conn:
@@ -533,7 +523,7 @@ def gerar_dossie_ia(df_periodo, df_km_periodo, d_ini, d_end):
         "## INSTRUÇÕES PARA A INTELIGÊNCIA ARTIFICIAL",
         "Você é um consultor financeiro e de estratégia operacional para motoristas de aplicativo.",
         "Analise os dados financeiros e MÉTRICAS DE QUILOMETRAGEM (R$/km, Custo/km e Lucro/km) para apontar como aumentar o lucro.",
-        "Nota: O motorista regista múltiplos turnos por dia, descartando KMs de uso particular entre as pausas.",
+        "Nota: O motorista registra múltiplos turnos por dia, descartando KMs de uso particular entre as pausas.",
         "",
         "### REGRAS CONTÁBEIS IMPORTANTES:",
         "- **99 com pedágios:** Já embute o reembolso dos pedágios.",
@@ -569,7 +559,7 @@ def gerar_dossie_ia(df_periodo, df_km_periodo, d_ini, d_end):
 
     return "\n".join(prompt_linhas)
 
-# Carregamento filtrado pelo utilizador logado
+# Carregamento filtrado pelo usuário logado
 df_completo = carregar_dados(USUARIO_ID)
 df_turnos_km = carregar_turnos_km(USUARIO_ID)
 
@@ -586,7 +576,7 @@ if "date_ver" not in st.session_state:
 # Modal de Edição de Turno
 @st.dialog("✏️ Editar Turno de KM")
 def modal_editar_turno(turno_id, km_ini_atual, km_fim_atual):
-    st.write(f"Editar Odómetros do **Turno #{turno_id}**:")
+    st.write(f"Editar Odômetros do **Turno #{turno_id}**:")
     txt_ini = st.text_input("KM Inicial:", value=str(int(km_ini_atual)) if km_ini_atual else "")
     txt_fim = st.text_input("KM Final (opcional):", value=str(int(km_fim_atual)) if km_fim_atual else "")
     
@@ -611,7 +601,7 @@ def modal_editar_turno(turno_id, km_ini_atual, km_fim_atual):
 @st.dialog("✏️ Editar Lançamento do Dia")
 def modal_editar_lancamento_dia(data_ref, lancamentos_dia_df):
     if lancamentos_dia_df.empty:
-        st.info("Nenhum lançamento registado nesta data.")
+        st.info("Nenhum lançamento registrado nesta data.")
         return
 
     mapa_itens = {}
@@ -629,7 +619,7 @@ def modal_editar_lancamento_dia(data_ref, lancamentos_dia_df):
         lista_rotulos.append(rotulo)
 
     rotulo_selecionado = st.selectbox(
-        "Selecione o registo para editar (apenas com registo ativo):", 
+        "Selecione o registro para editar (apenas com registro ativo):", 
         lista_rotulos, 
         key="sel_edicao_parcial_dia"
     )
@@ -789,7 +779,7 @@ with tab_operacao:
         with st.form("form_fechar_turno"):
             c_kf, c_btnf = st.columns([2, 1])
             with c_kf:
-                input_km_fim = st.text_input("Odómetro ao encerrar este turno:", placeholder=f"Ex: {km_ini_ativo + 80}")
+                input_km_fim = st.text_input("Odômetro ao encerrar este turno:", placeholder=f"Ex: {km_ini_ativo + 80}")
             with c_btnf:
                 st.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
                 btn_fechar_t = st.form_submit_button("🏁 Pausar / Fechar Turno", type="primary", use_container_width=True)
@@ -811,7 +801,7 @@ with tab_operacao:
             with c_ki:
                 ultimo_km = int(turnos_do_dia["km_final"].dropna().iloc[-1]) if not turnos_do_dia.empty and not turnos_do_dia["km_final"].dropna().empty else ""
                 placeholder_sug = f"Ex: {ultimo_km}" if ultimo_km else "Ex: 85420"
-                input_km_ini = st.text_input("Odómetro ao começar este turno:", value=str(ultimo_km) if ultimo_km else "", placeholder=placeholder_sug)
+                input_km_ini = st.text_input("Odômetro ao começar este turno:", value=str(ultimo_km) if ultimo_km else "", placeholder=placeholder_sug)
             with c_btni:
                 st.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
                 btn_abrir_t = st.form_submit_button("🟢 Iniciar Novo Turno", type="primary", use_container_width=True)
@@ -977,7 +967,7 @@ with tab_operacao:
                 st.session_state["msg_sucesso"] = f"Fechamento do dia {data_atual.strftime('%d/%m/%Y')} concluído com sucesso!"
                 st.rerun()
 
-    # Painel dos itens registados hoje com botão de edição dinâmico
+    # Painel dos itens registrados hoje com botão de edição dinâmico
     if not lancamentos_hoje.empty:
         col_cab_hoje, col_btn_ed_hoje = st.columns([4, 1.5])
         with col_cab_hoje:
@@ -996,7 +986,7 @@ with tab_operacao:
 # ==============================================================
 with tab_gerenciar:
     if df_completo.empty:
-        st.info("Nenhum lançamento financeiro registado.")
+        st.info("Nenhum lançamento financeiro registrado.")
     else:
         busca = st.text_input("🔍 Pesquisar lançamentos:", placeholder="Filtre por categoria ou observação...").lower().strip()
         df_lista = df_completo.copy()
