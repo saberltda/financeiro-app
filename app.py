@@ -60,6 +60,41 @@ def get_db_engine():
 
 engine = get_db_engine()
 
+# --- PONTE JAVASCRIPT: PERSISTÊNCIA VIA LOCALSTORAGE ---
+def js_sincronizar_sessao(token=None, acao="restaurar"):
+    if acao == "salvar" and token:
+        components.html(f"""
+        <script>
+            try {{
+                window.parent.localStorage.setItem('cmp_auth_token', '{token}');
+            }} catch(e) {{}}
+        </script>
+        """, height=0, width=0)
+    elif acao == "limpar":
+        components.html("""
+        <script>
+            try {
+                window.parent.localStorage.removeItem('cmp_auth_token');
+                const url = new URL(window.parent.location.href);
+                url.searchParams.delete('auth');
+                window.parent.history.replaceState({}, '', url);
+            } catch(e) {}
+        </script>
+        """, height=0, width=0)
+    elif acao == "restaurar":
+        components.html("""
+        <script>
+            try {
+                const token = window.parent.localStorage.getItem('cmp_auth_token');
+                const url = new URL(window.parent.location.href);
+                if (token && !url.searchParams.has('auth')) {
+                    url.searchParams.set('auth', token);
+                    window.parent.location.href = url.href;
+                }
+            } catch(e) {}
+        </script>
+        """, height=0, width=0)
+
 # --- SISTEMA DE AUTENTICAÇÃO COM SESSÃO PERSISTENTE (90 DIAS / 3 MESES) ---
 def gerar_novo_token_sessao(user_id):
     novo_token = secrets.token_urlsafe(32)
@@ -187,15 +222,26 @@ def verificar_login():
     if "usuario_logado" not in st.session_state:
         st.session_state["usuario_logado"] = None
 
-    # Verifica se já há um token persistente válido na URL
     token_url = st.query_params.get("auth")
-    if st.session_state["usuario_logado"] is None and token_url:
+    
+    # Se há token na URL, valida no banco
+    if token_url:
         usuario_token = buscar_usuario_por_token(token_url)
         if usuario_token:
             if usuario_token["ativo"]:
                 st.session_state["usuario_logado"] = usuario_token
+                # Mantém o localStorage sincronizado
+                js_sincronizar_sessao(token_url, acao="salvar")
             else:
                 st.query_params.clear()
+                js_sincronizar_sessao(acao="limpar")
+        else:
+            st.query_params.clear()
+            js_sincronizar_sessao(acao="limpar")
+    else:
+        # Se não há token na URL nem na sessão, executa script para resgatar do localStorage
+        if st.session_state["usuario_logado"] is None:
+            js_sincronizar_sessao(acao="restaurar")
 
     if st.session_state["usuario_logado"] is not None:
         return True
@@ -221,10 +267,10 @@ def verificar_login():
                             st.error("⛔ A sua subscrição está inativa ou cancelada. Regularize o acesso para continuar.")
                         else:
                             st.session_state["usuario_logado"] = dados_user
-                            # Gera token persistente de 90 dias (3 meses) e anexa à URL do usuário
                             token_gerado = gerar_novo_token_sessao(dados_user["id"])
                             if token_gerado:
                                 st.query_params["auth"] = token_gerado
+                                js_sincronizar_sessao(token_gerado, acao="salvar")
                             st.rerun()
                     else:
                         st.error("E-mail ou palavra-passe incorretos. Verifique suas credenciais.")
@@ -309,6 +355,7 @@ with c_sair:
     st.markdown("<div style='height: 18px;'></div>", unsafe_allow_html=True)
     if st.button("🚪 Sair", use_container_width=True):
         revogar_token_sessao(USUARIO_ID)
+        js_sincronizar_sessao(acao="limpar")
         st.query_params.clear()
         st.session_state["usuario_logado"] = None
         st.rerun()
