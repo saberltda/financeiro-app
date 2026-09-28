@@ -90,8 +90,8 @@ with c_sair:
         st.session_state["autenticado"] = False
         st.rerun()
 
-# Opções fixas
-OPCOES_RECEITA_FIXAS = ["Uber", "99", "Pedágio Uber", "Particular"]
+# Opções fixas atualizadas com a nova regra de pedágios
+OPCOES_RECEITA_FIXAS = ["Uber sem pedágios", "99 com pedágios", "Pedágio Uber", "Particular"]
 OPCOES_DESPESA_FIXAS = ["Combustível", "Lavagem", "SemParar do dia"]
 
 OPCOES_RECEITA_FORM = OPCOES_RECEITA_FIXAS + ["Outro"]
@@ -168,7 +168,7 @@ if "db_inicializado" not in st.session_state:
         st.error(f"Erro de conexão com o banco de dados: {str(e)}")
         st.stop()
 
-# Cache de alta velocidade para leitura dos dados
+# Cache de alta velocidade para leitura dos dados com migração/padronização em tempo de leitura
 @st.cache_data(ttl=600)
 def carregar_dados():
     with engine.connect() as conn:
@@ -176,6 +176,11 @@ def carregar_dados():
     if not df.empty:
         df["data"] = pd.to_datetime(df["data"])
         df["valor"] = df["valor"].astype(float)
+        # Padroniza registros legados gravados como "Uber" e "99"
+        df["categoria"] = df["categoria"].replace({
+            "Uber": "Uber sem pedágios",
+            "99": "99 com pedágios"
+        })
     return df
 
 def inserir_registro(data_reg, tipo, categoria, descricao, valor):
@@ -223,11 +228,9 @@ def gerar_dossie_ia(df_periodo, d_ini, d_end):
     media_lucro_dia = (lucro / dias_trabalhados) if dias_trabalhados > 0 else 0.0
     media_faturamento_dia = (tot_rec / dias_trabalhados) if dias_trabalhados > 0 else 0.0
 
-    # Agrupamentos
     rec_por_cat = df_local[df_local["tipo"] == "Receita"].groupby("categoria")["valor"].sum().to_dict()
     desp_por_cat = df_local[df_local["tipo"] == "Despesa"].groupby("categoria")["valor"].sum().to_dict()
 
-    # Performance por dia da semana
     df_diario = df_local.groupby(["data", "dia_semana", "tipo"])["valor"].sum().unstack(fill_value=0).reset_index()
     if "Receita" not in df_diario.columns:
         df_diario["Receita"] = 0.0
@@ -242,17 +245,23 @@ def gerar_dossie_ia(df_periodo, d_ini, d_end):
         lucro_medio=("Lucro", "mean")
     ).reset_index()
 
-    # Montagem do relatório textual com o prompt embutido
     prompt_linhas = [
         "# RELATÓRIO OPERACIONAL E FINANCEIRO — MOTORISTA DE APLICATIVO",
         "",
         "## INSTRUÇÕES PARA A INTELIGÊNCIA ARTIFICIAL",
-        "Você é um consultor financeiro e de estratégia operacional sênior para motoristas de aplicativo.",
-        "Analise minuciosamente os dados abaixo e forneça um diagnóstico estratégico com:",
-        "1. **Análise de Rentabilidade e Custos:** O peso do combustível e manutenção em relação à receita bruta e sua margem líquida real.",
-        "2. **Padrões de Eficiência por Dia da Semana:** Quais dias são mais lucrativos por quilômetro/esforço e quais dias dão prejuízo ou lucro marginal baixo (recomendação de dias de folga ideais).",
-        "3. **Análise de Canais/Aplicativos:** Se há dependência excessiva de um app e qual canal gera maior retorno líquido.",
-        "4. **Plano de Ação Prático (3 Passos Imediatos):** Sugestões de corte de desperdício, otimização de horários e planejamento de reserva para manutenção e depreciação veicular.",
+        "Você é um consultor financeiro e de estratégia operacional sênior especialista em motoristas de aplicativo.",
+        "Analise minuciosamente os dados operacionais abaixo e forneça um diagnóstico estratégico focado em aumentar o lucro líquido.",
+        "",
+        "### REGRAS CONTÁBEIS IMPORTANTES DESTA OPERAÇÃO (LEIA COM ATENÇÃO):",
+        "- **99 com pedágios:** Os valores lançados nesta categoria JÁ CONTÊMPLAM e trazem embutidos o reembolso dos pedágios das viagens.",
+        "- **Uber sem pedágios:** Os valores lançados nesta categoria NÃO INCLUEM pedágios. Os reembolsos de pedágios da Uber são apurados à parte e lançados separadamente na categoria 'Pedágio Uber'.",
+        "- **SemParar do dia / Pedágios:** Os custos com a tag de pedágio constam em 'SemParar do dia'. Não deduza pedágios duas vezes e leve em consideração essas particularidades ao comparar a rentabilidade líquida da Uber vs. 99.",
+        "",
+        "### SEU DIAGNÓSTICO DEVE CONTER:",
+        "1. **Análise de Rentabilidade Real e Custos:** O peso do combustível e manutenção sobre a receita bruta e a margem líquida real de cada plataforma.",
+        "2. **Padrões de Eficiência por Dia da Semana:** Quais dias são mais lucrativos por esforço e quais dias dão lucro marginal baixo (recomendação de dias de folga ideais).",
+        "3. **Comparativo entre Aplicativos (Uber sem pedágios vs. 99 com pedágios vs. Particular):** Qual canal gera maior retorno líquido efetivo considerando o impacto dos pedágios.",
+        "4. **Plano de Ação Prático (3 Passos Imediatos):** Sugestões de corte de desperdício, otimização de horários e planejamento de reserva veicular.",
         "",
         "---",
         "## 1. RESUMO EXECUTIVO DO PERÍODO",
@@ -653,7 +662,7 @@ else:
             "Filtrar por Categoria(s):",
             options=opcoes_filtro_tabela,
             default=opcoes_filtro_tabela,
-            placeholder="Selecione uma ou mais categorias (ex: Uber, Outras despesas...)"
+            placeholder="Selecione uma ou mais categorias (ex: Uber sem pedágios, 99 com pedágios...)"
         )
 
         cats_para_filtrar = []
@@ -711,7 +720,7 @@ else:
                 hide_index=True
             )
 
-            # Botões de Exportação: CSV Normal e Dossiê Especial para IA
+            # Botões de Exportação: CSV e Dossiê Estruturado para IA
             col_exp1, col_exp2 = st.columns(2)
             
             with col_exp1:
