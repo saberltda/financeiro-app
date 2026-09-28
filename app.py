@@ -5,6 +5,7 @@ from zoneinfo import ZoneInfo
 import plotly.express as px
 from sqlalchemy import create_engine, text
 import streamlit.components.v1 as components
+from streamlit_local_storage import LocalStorage
 import secrets
 
 st.set_page_config(
@@ -60,52 +61,8 @@ def get_db_engine():
 
 engine = get_db_engine()
 
-# --- COMPONENTE BIDIRECIONAL DE ARMAZENAMENTO LOCAL ---
-# Comunica diretamente com o Streamlit enviando o token armazenado no aparelho
-_componente_storage = components.declare_component(
-    "armazenamento_local_token",
-    html="""
-    <!DOCTYPE html>
-    <html>
-    <head>
-    <script>
-        function sendValue(value) {
-            window.parent.postMessage({
-                isStreamlitMessage: true,
-                type: "streamlit:setComponentValue",
-                value: value
-            }, "*");
-        }
-
-        window.addEventListener("message", function(event) {
-            if (event.data.type === "streamlit:render") {
-                const args = event.data.args;
-                const acao = args.acao;
-                const token = args.token;
-
-                if (acao === "salvar" && token) {
-                    try { localStorage.setItem("cmp_motorista_token", token); } catch(e){}
-                    sendValue(token);
-                } else if (acao === "limpar") {
-                    try { localStorage.removeItem("cmp_motorista_token"); } catch(e){}
-                    sendValue("");
-                } else if (acao === "obter") {
-                    let salvo = "";
-                    try { salvo = localStorage.getItem("cmp_motorista_token") || ""; } catch(e){}
-                    sendValue(salvo);
-                }
-            }
-        });
-        window.parent.postMessage({isStreamlitMessage: true, type: "streamlit:componentReady", apiVersion: 1}, "*");
-    </script>
-    </head>
-    <body></body>
-    </html>
-    """
-)
-
-def gerenciar_token_navegador(acao="obter", token=None, key="storage_token"):
-    return _componente_storage(acao=acao, token=token, default=None, key=key)
+# Instância do LocalStorage nativo
+local_storage = LocalStorage()
 
 # --- SISTEMA DE AUTENTICAÇÃO COM SESSÃO PERSISTENTE (90 DIAS / 3 MESES) ---
 def gerar_novo_token_sessao(user_id):
@@ -234,14 +191,13 @@ def verificar_login():
     if "usuario_logado" not in st.session_state:
         st.session_state["usuario_logado"] = None
 
-    # Tenta restaurar do armazenamento local do aparelho
+    # Tenta restaurar do armazenamento local permanente do aparelho
     if st.session_state["usuario_logado"] is None:
-        token_armazenado = gerenciar_token_navegador(acao="obter", key="restaurar_sessao_init")
+        token_armazenado = local_storage.getItem("cmp_motorista_token")
         if token_armazenado:
             user_encontrado = buscar_usuario_por_token(token_armazenado)
             if user_encontrado and user_encontrado["ativo"]:
                 st.session_state["usuario_logado"] = user_encontrado
-                st.rerun()
 
     if st.session_state["usuario_logado"] is not None:
         return True
@@ -267,10 +223,10 @@ def verificar_login():
                             st.error("⛔ A sua subscrição está inativa ou cancelada. Regularize o acesso para continuar.")
                         else:
                             st.session_state["usuario_logado"] = dados_user
-                            # Gera o token de 90 dias e salva no armazenamento permanente do aparelho
+                            # Salva o token de 90 dias no aparelho do usuário
                             token_gerado = gerar_novo_token_sessao(dados_user["id"])
                             if token_gerado:
-                                gerenciar_token_navegador(acao="salvar", token=token_gerado, key="salvar_token_login")
+                                local_storage.setItem("cmp_motorista_token", token_gerado)
                             st.rerun()
                     else:
                         st.error("E-mail ou palavra-passe incorretos. Verifique suas credenciais.")
@@ -355,7 +311,7 @@ with c_sair:
     st.markdown("<div style='height: 18px;'></div>", unsafe_allow_html=True)
     if st.button("🚪 Sair", use_container_width=True):
         revogar_token_sessao(USUARIO_ID)
-        gerenciar_token_navegador(acao="limpar", key="limpar_token_logout")
+        local_storage.deleteItem("cmp_motorista_token")
         st.session_state["usuario_logado"] = None
         st.rerun()
 
