@@ -63,7 +63,6 @@ engine = get_db_engine()
 def autenticar_usuario_db(email_digitado, senha_digitada):
     try:
         with engine.connect() as conn:
-            # Valida senhas com hash pgcrypto ou texto direto enviado via webhook
             query = text("""
                 SELECT id, email, nome, ativo 
                 FROM usuarios 
@@ -90,6 +89,33 @@ def autenticar_usuario_db(email_digitado, senha_digitada):
     except Exception as e:
         st.error(f"Erro ao verificar credenciais: {str(e)}")
         return None
+
+def atualizar_senha_usuario(user_id, senha_atual, nova_senha):
+    try:
+        with engine.begin() as conn:
+            # 1. Verifica se a senha atual está correta
+            check_query = text("""
+                SELECT id FROM usuarios 
+                WHERE id = :uid 
+                  AND (
+                      senha_hash = crypt(:senha_atual, senha_hash)
+                      OR senha_hash = :senha_atual
+                  );
+            """)
+            valido = conn.execute(check_query, {"uid": user_id, "senha_atual": senha_atual}).fetchone()
+            if not valido:
+                return False, "A senha atual informada está incorreta."
+
+            # 2. Atualiza para a nova senha com hash forte
+            up_query = text("""
+                UPDATE usuarios 
+                SET senha_hash = crypt(:nova_senha, gen_salt('bf'))
+                WHERE id = :uid;
+            """)
+            conn.execute(up_query, {"uid": user_id, "nova_senha": nova_senha})
+            return True, "Senha alterada com sucesso!"
+    except Exception as e:
+        return False, f"Erro ao atualizar senha: {str(e)}"
 
 def verificar_login():
     if "usuario_logado" not in st.session_state:
@@ -133,14 +159,44 @@ usuario_atual = st.session_state["usuario_logado"]
 USUARIO_ID = usuario_atual["id"]
 NOME_EXIBICAO = usuario_atual["nome"] if usuario_atual["nome"] else usuario_atual["email"]
 
-# --- BARRA SUPERIOR COM IDENTIFICAÇÃO E LOGOUT ---
-c_titulo, c_sair = st.columns([4, 1.4])
+# Modal de Alteração de Senha
+@st.dialog("🔑 Alterar Palavra-passe")
+def modal_alterar_senha(user_id):
+    st.write("Crie uma nova senha de acesso segura para a sua conta.")
+    with st.form("form_mudar_senha"):
+        s_atual = st.text_input("Palavra-passe Atual:", type="password", placeholder="Ex: 123456")
+        s_nova = st.text_input("Nova Palavra-passe:", type="password", placeholder="No mínimo 6 caracteres")
+        s_conf = st.text_input("Confirme a Nova Palavra-passe:", type="password", placeholder="Repita a nova senha")
+        
+        btn_salvar_senha = st.form_submit_button("💾 Atualizar Senha", type="primary", use_container_width=True)
+
+        if btn_salvar_senha:
+            if not s_atual or not s_nova or not s_conf:
+                st.error("Preencha todos os campos.")
+            elif len(s_nova) < 6:
+                st.error("A nova senha deve ter pelo menos 6 caracteres.")
+            elif s_nova != s_conf:
+                st.error("A confirmação não coincide com a nova senha.")
+            else:
+                ok, msg = atualizar_senha_usuario(user_id, s_atual, s_nova)
+                if ok:
+                    st.session_state["msg_sucesso"] = "Sua senha foi atualizada com sucesso!"
+                    st.rerun()
+                else:
+                    st.error(msg)
+
+# --- BARRA SUPERIOR COM IDENTIFICAÇÃO, TROCA DE SENHA E LOGOUT ---
+c_titulo, c_senha, c_sair = st.columns([3.5, 1.3, 1.2])
 with c_titulo:
     st.title("🚗 Gestão de Turnos & Finanças")
     st.caption(f"👤 Ligado como: **{NOME_EXIBICAO}**")
+with c_senha:
+    st.markdown("<div style='height: 18px;'></div>", unsafe_allow_html=True)
+    if st.button("🔑 Alterar Senha", use_container_width=True):
+        modal_alterar_senha(USUARIO_ID)
 with c_sair:
     st.markdown("<div style='height: 18px;'></div>", unsafe_allow_html=True)
-    if st.button("🚪 Sair da Conta", use_container_width=True):
+    if st.button("🚪 Sair", use_container_width=True):
         st.session_state["usuario_logado"] = None
         st.rerun()
 
@@ -486,7 +542,10 @@ def modal_editar_registro(item_id, item_data, item_tipo, item_cat, item_desc, it
     st.markdown(f"**Tipo:** {badge} **{item_tipo}**")
     
     with st.form(f"form_ed_{item_id}"):
-        novo_val_str = st.text_input("Valor (R$):", value=f"{float(item_val):.2f}".replace(".", ","))
+        novo_val_str = st.text_input(
+            "Valor (R$):", 
+            value=f"{float(item_val):.2f}".replace(".", ",")
+        )
         opcoes_lista = OPCOES_RECEITA_FORM if item_tipo == "Receita" else OPCOES_DESPESA_FORM
         idx = opcoes_lista.index(item_cat) if item_cat in opcoes_lista else opcoes_lista.index("Outro")
         cat_sel = st.selectbox("Categoria:", opcoes_lista, index=idx)
