@@ -5,6 +5,7 @@ from zoneinfo import ZoneInfo
 import plotly.express as px
 from sqlalchemy import create_engine, text
 import streamlit.components.v1 as components
+import extra_streamlit_components as stx
 
 st.set_page_config(
     page_title="Controle Motorista Pro", 
@@ -19,7 +20,7 @@ FUSO_SP = ZoneInfo("America/Sao_Paulo")
 def obter_data_hoje():
     return datetime.now(FUSO_SP).date()
 
-# Estilização visual moderna e compacta para celular
+# Estilização visual moderna e compacta para telemóvel / mobile
 st.markdown("""
 <style>
     div[data-testid="stMetricValue"] > div {
@@ -59,7 +60,10 @@ def get_db_engine():
 
 engine = get_db_engine()
 
-# --- SISTEMA DE AUTENTICAÇÃO COM PRIMEIRO ACESSO OBRIGATÓRIO ---
+# Inicialização do gestor de cookies para persistência de 3 meses
+cookie_manager = stx.CookieManager()
+
+# --- SISTEMA DE AUTENTICAÇÃO COM SESSÃO PERSISTENTE (90 DIAS) ---
 def autenticar_usuario_db(email_digitado, senha_digitada):
     try:
         with engine.connect() as conn:
@@ -89,6 +93,28 @@ def autenticar_usuario_db(email_digitado, senha_digitada):
             return None
     except Exception as e:
         st.error(f"Erro ao verificar credenciais: {str(e)}")
+        return None
+
+def buscar_usuario_por_id(user_id):
+    try:
+        with engine.connect() as conn:
+            query = text("""
+                SELECT id, email, nome, ativo, COALESCE(primeiro_acesso, FALSE) AS primeiro_acesso
+                FROM usuarios 
+                WHERE id = :uid
+                LIMIT 1;
+            """)
+            result = conn.execute(query, {"uid": int(user_id)}).fetchone()
+            if result:
+                return {
+                    "id": result[0],
+                    "email": result[1],
+                    "nome": result[2],
+                    "ativo": bool(result[3]),
+                    "primeiro_acesso": bool(result[4])
+                }
+            return None
+    except Exception:
         return None
 
 def atualizar_senha_primeiro_acesso(user_id, nova_senha):
@@ -135,6 +161,14 @@ def verificar_login():
     if "usuario_logado" not in st.session_state:
         st.session_state["usuario_logado"] = None
 
+    # Tenta restaurar a sessão a partir do Cookie gravado (validade de 90 dias / 3 meses)
+    if st.session_state["usuario_logado"] is None:
+        cookie_uid = cookie_manager.get("motorista_auth_uid")
+        if cookie_uid:
+            usuario_recuperado = buscar_usuario_por_id(cookie_uid)
+            if usuario_recuperado and usuario_recuperado["ativo"]:
+                st.session_state["usuario_logado"] = usuario_recuperado
+
     if st.session_state["usuario_logado"] is not None:
         return True
 
@@ -159,6 +193,12 @@ def verificar_login():
                             st.error("⛔ A sua subscrição está inativa ou cancelada. Regularize o acesso para continuar.")
                         else:
                             st.session_state["usuario_logado"] = dados_user
+                            # Define o cookie no navegador do cliente válido por 90 dias (3 meses)
+                            cookie_manager.set(
+                                "motorista_auth_uid", 
+                                str(dados_user["id"]), 
+                                expires_at=datetime.now() + timedelta(days=90)
+                            )
                             st.rerun()
                     else:
                         st.error("E-mail ou palavra-passe incorretos. Verifique as suas credenciais.")
@@ -168,7 +208,7 @@ def verificar_login():
 if not verificar_login():
     st.stop()
 
-# Dados do usuário logado
+# Dados do utilizador autenticado
 usuario_atual = st.session_state["usuario_logado"]
 USUARIO_ID = usuario_atual["id"]
 NOME_EXIBICAO = usuario_atual["nome"] if usuario_atual["nome"] else usuario_atual["email"]
@@ -178,8 +218,8 @@ if usuario_atual.get("primeiro_acesso", False):
     col_v1, col_centro, col_v2 = st.columns([1, 2.5, 1])
     with col_centro:
         st.markdown("<div style='height: 30px;'></div>", unsafe_allow_html=True)
-        st.markdown("### 🛡️ Defina sua Senha Pessoal")
-        st.info("👋 Olá! Este é o seu primeiro acesso. Por segurança, crie uma senha definitiva antes de começar a usar o aplicativo.")
+        st.markdown("### 🛡️ Defina a sua Senha Pessoal")
+        st.info("👋 Olá! Este é o seu primeiro acesso. Por segurança, crie uma senha definitiva antes de começar a utilizar a aplicação.")
 
         with st.form("form_primeiro_acesso"):
             nova_senha_pa = st.text_input("Nova Senha:", type="password", placeholder="Mínimo 6 caracteres")
@@ -225,7 +265,7 @@ def modal_alterar_senha(user_id):
             else:
                 ok, msg = atualizar_senha_usuario(user_id, s_atual, s_nova)
                 if ok:
-                    st.session_state["msg_sucesso"] = "Sua senha foi atualizada com sucesso!"
+                    st.session_state["msg_sucesso"] = "A sua senha foi atualizada com sucesso!"
                     st.rerun()
                 else:
                     st.error(msg)
@@ -242,6 +282,7 @@ with c_senha:
 with c_sair:
     st.markdown("<div style='height: 18px;'></div>", unsafe_allow_html=True)
     if st.button("🚪 Sair", use_container_width=True):
+        cookie_manager.delete("motorista_auth_uid")
         st.session_state["usuario_logado"] = None
         st.rerun()
 
@@ -296,7 +337,7 @@ def converter_km_inteiro(texto):
     except ValueError:
         return None
 
-# Operações de Base de Dados com Filtro por Usuário
+# Operações de Base de Dados com Filtro por Utilizador
 @st.cache_data(ttl=600)
 def carregar_dados(user_id):
     with engine.connect() as conn:
@@ -478,7 +519,7 @@ def gerar_dossie_ia(df_periodo, df_km_periodo, d_ini, d_end):
 
     return "\n".join(prompt_linhas)
 
-# Carregamento filtrado pelo usuário logado
+# Carregamento filtrado pelo utilizador atual
 df_completo = carregar_dados(USUARIO_ID)
 df_turnos_km = carregar_turnos_km(USUARIO_ID)
 
@@ -495,7 +536,7 @@ if "date_ver" not in st.session_state:
 # Modal de Edição de Turno
 @st.dialog("✏️ Editar Turno de KM")
 def modal_editar_turno(turno_id, km_ini_atual, km_fim_atual):
-    st.write(f"Editar Odômetros do **Turno #{turno_id}**:")
+    st.write(f"Editar Odómetros do **Turno #{turno_id}**:")
     txt_ini = st.text_input("KM Inicial:", value=str(int(km_ini_atual)) if km_ini_atual else "")
     txt_fim = st.text_input("KM Final (opcional):", value=str(int(km_fim_atual)) if km_fim_atual else "")
     
