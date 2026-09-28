@@ -5,7 +5,6 @@ from zoneinfo import ZoneInfo
 import plotly.express as px
 from sqlalchemy import create_engine, text
 import streamlit.components.v1 as components
-from streamlit_local_storage import LocalStorage
 import secrets
 
 st.set_page_config(
@@ -61,12 +60,9 @@ def get_db_engine():
 
 engine = get_db_engine()
 
-# Instância do LocalStorage nativo
-local_storage = LocalStorage()
-
 # --- SISTEMA DE AUTENTICAÇÃO COM SESSÃO PERSISTENTE (90 DIAS / 3 MESES) ---
 def gerar_novo_token_sessao(user_id):
-    novo_token = secrets.token_urlsafe(32)
+    novo_token = secrets.token_urlsafe(24)
     data_expira = datetime.now(FUSO_SP) + timedelta(days=90)
     try:
         with engine.begin() as conn:
@@ -84,7 +80,7 @@ def autenticar_usuario_db(email_digitado, senha_digitada):
     try:
         with engine.connect() as conn:
             query = text("""
-                SELECT id, email, nome, ativo, COALESCE(primeiro_acesso, FALSE) AS primeiro_acesso
+                SELECT id, email, nome, ativo, COALESCE(primeiro_acesso, FALSE) AS primeiro_acesso, sessao_token, sessao_expira
                 FROM usuarios 
                 WHERE LOWER(email) = LOWER(:email) 
                   AND (
@@ -104,7 +100,9 @@ def autenticar_usuario_db(email_digitado, senha_digitada):
                     "email": result[1],
                     "nome": result[2],
                     "ativo": bool(result[3]),
-                    "primeiro_acesso": bool(result[4])
+                    "primeiro_acesso": bool(result[4]),
+                    "sessao_token": result[5],
+                    "sessao_expira": result[6]
                 }
             return None
     except Exception as e:
@@ -191,17 +189,23 @@ def verificar_login():
     if "usuario_logado" not in st.session_state:
         st.session_state["usuario_logado"] = None
 
-    # Tenta restaurar do armazenamento local permanente do aparelho
-    if st.session_state["usuario_logado"] is None:
-        token_armazenado = local_storage.getItem("cmp_motorista_token")
-        if token_armazenado:
-            user_encontrado = buscar_usuario_por_token(token_armazenado)
-            if user_encontrado and user_encontrado["ativo"]:
-                st.session_state["usuario_logado"] = user_encontrado
+    # 1. Tenta restaurar login via parâmetro 'k' na URL
+    token_url = st.query_params.get("k")
+    if token_url and st.session_state["usuario_logado"] is None:
+        usuario_valido = buscar_usuario_por_token(token_url)
+        if usuario_valido:
+            if usuario_valido["ativo"]:
+                st.session_state["usuario_logado"] = usuario_valido
+                return True
+            else:
+                st.query_params.clear()
+        else:
+            st.query_params.clear()
 
     if st.session_state["usuario_logado"] is not None:
         return True
 
+    # 2. Tela de Login Manual
     col_vazia1, col_centro, col_vazia2 = st.columns([1, 2.5, 1])
     with col_centro:
         st.markdown("<div style='height: 40px;'></div>", unsafe_allow_html=True)
@@ -223,10 +227,15 @@ def verificar_login():
                             st.error("⛔ A sua subscrição está inativa ou cancelada. Regularize o acesso para continuar.")
                         else:
                             st.session_state["usuario_logado"] = dados_user
-                            # Salva o token de 90 dias no aparelho do usuário
-                            token_gerado = gerar_novo_token_sessao(dados_user["id"])
-                            if token_gerado:
-                                local_storage.setItem("cmp_motorista_token", token_gerado)
+                            
+                            # Gera novo token de 90 dias
+                            token_atual = dados_user.get("sessao_token")
+                            if not token_atual:
+                                token_atual = gerar_novo_token_sessao(dados_user["id"])
+                            
+                            # Fixa o token na URL para persistência de 3 meses
+                            if token_atual:
+                                st.query_params["k"] = token_atual
                             st.rerun()
                     else:
                         st.error("E-mail ou palavra-passe incorretos. Verifique suas credenciais.")
@@ -236,7 +245,7 @@ def verificar_login():
 if not verificar_login():
     st.stop()
 
-# Dados do usuário logado
+# Garante que o parâmetro de URL permaneça ativo durante a navegação
 usuario_atual = st.session_state["usuario_logado"]
 USUARIO_ID = usuario_atual["id"]
 NOME_EXIBICAO = usuario_atual["nome"] if usuario_atual["nome"] else usuario_atual["email"]
@@ -311,9 +320,12 @@ with c_sair:
     st.markdown("<div style='height: 18px;'></div>", unsafe_allow_html=True)
     if st.button("🚪 Sair", use_container_width=True):
         revogar_token_sessao(USUARIO_ID)
-        local_storage.deleteItem("cmp_motorista_token")
+        st.query_params.clear()
         st.session_state["usuario_logado"] = None
         st.rerun()
+
+# Dica amigável de instalação como app no celular
+st.info("💡 **Dica para não precisar digitar login todo dia:** No menu do seu navegador (três pontinhos no Chrome ou ícone de compartilhar no Safari), clique em **'Adicionar à tela de início'**. O ícone abrirá o app já logado direto por 3 meses!")
 
 # Nomenclaturas fixas
 OPCOES_RECEITA_FIXAS = ["Uber sem pedágios", "99 com pedágios", "Pedágio Uber", "Particular"]
