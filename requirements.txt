@@ -3,4 +3,3 @@ pandas
 plotly
 sqlalchemy
 psycopg[binary]
-extra-streamlit-components
