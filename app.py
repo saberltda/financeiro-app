@@ -1,6 +1,6 @@
 import streamlit as st
 import pandas as pd
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 import plotly.express as px
 from sqlalchemy import create_engine, text
@@ -118,7 +118,7 @@ def converter_valor(texto):
     except ValueError:
         return -1.0
 
-# Conexão blindada com o Supabase via Secrets do Streamlit Cloud
+# Conexão com o Supabase via Secrets do Streamlit Cloud
 raw_url = st.secrets["database"]["url"]
 
 if raw_url.startswith("postgresql://"):
@@ -295,9 +295,8 @@ def modal_excluir_registro(item_id, item_cat, item_val_formatado):
 # Abas Nativas
 tab_novo, tab_gerenciar = st.tabs(["➕ Novo Lançamento", "⚙️ Gerenciar Registros"])
 
-# --- ABA 1: NOVO LANÇAMENTO (REORGANIZADO) ---
+# --- ABA 1: NOVO LANÇAMENTO ---
 with tab_novo:
-    # 1. Data fica no topo com atalhos rápidos
     st.markdown("**Data do Lançamento:**")
     col_h, col_o, col_d = st.columns([1, 1, 2])
     
@@ -324,7 +323,6 @@ with tab_novo:
 
     st.caption(f"🗓️ Data definida: **{st.session_state['data_novo_lancamento'].strftime('%d/%m/%Y')}**")
 
-    # 2. Todos os campos reunidos abaixo (Tipo, Categoria, Valor e Observação)
     with st.form("form_novo_lancamento", clear_on_submit=True):
         col_t1, col_t2 = st.columns(2)
         with col_t1:
