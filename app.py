@@ -596,7 +596,45 @@ else:
                 use_container_width=True
             )
 
-        # --- SEÇÃO DE GRÁFICOS ---
+        # --- SEÇÃO 1 DE GRÁFICOS: DISTRIBUIÇÃO POR ORIGEM E CUSTO (PIZZAS PRIMEIRO) ---
+        st.markdown("---")
+        st.markdown("#### 📊 Distribuição por Origem e Custo")
+        col_d1, col_d2 = st.columns(2)
+
+        df_rec = df_f[df_f["tipo"] == "Receita"]
+        df_desp = df_f[df_f["tipo"] == "Despesa"]
+
+        with col_d1:
+            if not df_rec.empty:
+                fig_pie_rec = px.pie(
+                    df_rec, 
+                    names="categoria", 
+                    values="valor", 
+                    title="Ganhos por Origem",
+                    hole=0.45
+                )
+                fig_pie_rec.update_traces(textposition='inside', textinfo='percent+label')
+                fig_pie_rec.update_layout(showlegend=False, margin=dict(l=10, r=10, t=40, b=10))
+                st.plotly_chart(fig_pie_rec, use_container_width=True, config={"displayModeBar": False})
+            else:
+                st.caption("Sem receitas no período.")
+
+        with col_d2:
+            if not df_desp.empty:
+                fig_pie_desp = px.pie(
+                    df_desp, 
+                    names="categoria", 
+                    values="valor", 
+                    title="Custos por Categoria",
+                    hole=0.45
+                )
+                fig_pie_desp.update_traces(textposition='inside', textinfo='percent+label')
+                fig_pie_desp.update_layout(showlegend=False, margin=dict(l=10, r=10, t=40, b=10))
+                st.plotly_chart(fig_pie_desp, use_container_width=True, config={"displayModeBar": False})
+            else:
+                st.caption("Sem despesas no período.")
+
+        # --- SEÇÃO 2 DE GRÁFICOS: DESEMPENHO NO PERÍODO (BARRAS NO FINAL DA TELA) ---
         st.markdown("---")
         st.markdown("#### 📈 Desempenho no Período")
         
@@ -621,48 +659,26 @@ else:
             labels={"agrup": "Data/Mês", "valor": "R$", "tipo": "Tipo"},
             color_discrete_map={"Receita": "#00CC96", "Despesa": "#EF553B"}
         )
+        
+        # Trava os eixos e desativa o modo de arrasto para não interferir na rolagem da tela no celular
         fig_bar.update_layout(
             margin=dict(l=10, r=10, t=15, b=25),
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-            xaxis_title=None
+            xaxis_title=None,
+            dragmode=False,
+            xaxis=dict(fixedrange=True),
+            yaxis=dict(fixedrange=True)
         )
-        st.plotly_chart(fig_bar, use_container_width=True)
-
-        st.markdown("#### 📊 Distribuição por Origem e Custo")
-        col_d1, col_d2 = st.columns(2)
-
-        df_rec = df_f[df_f["tipo"] == "Receita"]
-        df_desp = df_f[df_f["tipo"] == "Despesa"]
-
-        with col_d1:
-            if not df_rec.empty:
-                fig_pie_rec = px.pie(
-                    df_rec, 
-                    names="categoria", 
-                    values="valor", 
-                    title="Ganhos por Origem",
-                    hole=0.45
-                )
-                fig_pie_rec.update_traces(textposition='inside', textinfo='percent+label')
-                fig_pie_rec.update_layout(showlegend=False, margin=dict(l=10, r=10, t=40, b=10))
-                st.plotly_chart(fig_pie_rec, use_container_width=True)
-            else:
-                st.caption("Sem receitas no período.")
-
-        with col_d2:
-            if not df_desp.empty:
-                fig_pie_desp = px.pie(
-                    df_desp, 
-                    names="categoria", 
-                    values="valor", 
-                    title="Custos por Categoria",
-                    hole=0.45
-                )
-                fig_pie_desp.update_traces(textposition='inside', textinfo='percent+label')
-                fig_pie_desp.update_layout(showlegend=False, margin=dict(l=10, r=10, t=40, b=10))
-                st.plotly_chart(fig_pie_desp, use_container_width=True)
-            else:
-                st.caption("Sem despesas no período.")
+        
+        st.plotly_chart(
+            fig_bar, 
+            use_container_width=True, 
+            config={
+                "scrollZoom": False,
+                "displayModeBar": False,
+                "doubleClick": False
+            }
+        )
 
 components.html("""
 <script>
