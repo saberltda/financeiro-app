@@ -5,7 +5,6 @@ from zoneinfo import ZoneInfo
 import plotly.express as px
 from sqlalchemy import create_engine, text
 import streamlit.components.v1 as components
-import secrets
 
 st.set_page_config(
     page_title="Controle Motorista Pro", 
@@ -14,11 +13,13 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
+# Fuso horário oficial de Brasília
 FUSO_SP = ZoneInfo("America/Sao_Paulo")
 
 def obter_data_hoje():
     return datetime.now(FUSO_SP).date()
 
+# Estilização visual moderna e botões grandes para toque no celular
 st.markdown("""
 <style>
     div[data-testid="stMetricValue"] > div {
@@ -26,7 +27,7 @@ st.markdown("""
         font-weight: 700 !important;
     }
     .stButton button {
-        border-radius: 8px;
+        border-radius: 10px;
     }
     .card-fechamento-km {
         padding: 14px 18px;
@@ -42,7 +43,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# Conexão Supabase
+# Conexão com o Supabase
 raw_url = st.secrets["database"]["url"]
 if raw_url.startswith("postgresql://"):
     raw_url = raw_url.replace("postgresql://", "postgresql+psycopg://", 1)
@@ -58,34 +59,35 @@ def get_db_engine():
 
 engine = get_db_engine()
 
-# Script para gravar Cookie no domínio principal (Persistência para o Atalho Instalado)
-def gravar_cookie_cliente(chave):
-    components.html(f"""
-    <script>
-        const d = new Date();
-        d.setTime(d.getTime() + (365*24*60*60*1000));
-        const expires = "expires="+ d.toUTCString();
-        window.parent.document.cookie = "cmp_token=" + "{chave}" + ";" + expires + ";path=/;SameSite=Lax";
-    </script>
-    """, height=0, width=0)
-
-def apagar_cookie_cliente():
-    components.html("""
-    <script>
-        window.parent.document.cookie = "cmp_token=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/;";
-    </script>
-    """, height=0, width=0)
-
-def garantir_chave_acesso(user_id):
-    nova_chave = secrets.token_urlsafe(20)
+# --- BUSCA DE MOTORISTAS ATIVOS PARA ENTRADA COM 1 TOQUE ---
+def listar_motoristas_ativos():
     try:
-        with engine.begin() as conn:
-            conn.execute(text("""
-                UPDATE usuarios 
-                SET chave_acesso = :k 
-                WHERE id = :uid AND chave_acesso IS NULL;
-            """), {"k": nova_chave, "uid": user_id})
-        return nova_chave
+        with engine.connect() as conn:
+            query = text("""
+                SELECT id, COALESCE(nome, email) as nome_exibicao, email, ativo
+                FROM usuarios
+                WHERE ativo = TRUE
+                ORDER BY nome_exibicao ASC;
+            """)
+            result = conn.execute(query).fetchall()
+            return [{"id": r[0], "nome": r[1], "email": r[2], "ativo": bool(r[3])} for r in result]
+    except Exception as e:
+        st.error(f"Erro ao carregar lista de motoristas: {str(e)}")
+        return []
+
+def buscar_usuario_por_id(user_id):
+    try:
+        with engine.connect() as conn:
+            query = text("SELECT id, email, nome, ativo FROM usuarios WHERE id = :uid LIMIT 1;")
+            result = conn.execute(query, {"uid": int(user_id)}).fetchone()
+            if result:
+                return {
+                    "id": result[0],
+                    "email": result[1],
+                    "nome": result[2],
+                    "ativo": bool(result[3])
+                }
+            return None
     except Exception:
         return None
 
@@ -94,247 +96,70 @@ def buscar_usuario_por_chave(chave_acesso):
         return None
     try:
         with engine.connect() as conn:
-            query = text("""
-                SELECT id, email, nome, ativo, COALESCE(primeiro_acesso, FALSE) AS primeiro_acesso, chave_acesso
-                FROM usuarios 
-                WHERE chave_acesso = :chave
-                LIMIT 1;
-            """)
+            query = text("SELECT id, email, nome, ativo FROM usuarios WHERE chave_acesso = :chave LIMIT 1;")
             result = conn.execute(query, {"chave": chave_acesso.strip()}).fetchone()
             if result:
                 return {
                     "id": result[0],
                     "email": result[1],
                     "nome": result[2],
-                    "ativo": bool(result[3]),
-                    "primeiro_acesso": bool(result[4]),
-                    "chave_acesso": result[5]
+                    "ativo": bool(result[3])
                 }
             return None
     except Exception:
         return None
-
-def autenticar_usuario_senha(email_digitado, senha_digitada):
-    try:
-        with engine.connect() as conn:
-            query = text("""
-                SELECT id, email, nome, ativo, COALESCE(primeiro_acesso, FALSE) AS primeiro_acesso, chave_acesso
-                FROM usuarios 
-                WHERE LOWER(email) = LOWER(:email) 
-                  AND (
-                      senha_hash = crypt(:senha, senha_hash)
-                      OR senha_hash = :senha
-                  )
-                LIMIT 1;
-            """)
-            result = conn.execute(query, {
-                "email": email_digitado.strip(),
-                "senha": senha_digitada
-            }).fetchone()
-            
-            if result:
-                user_dict = {
-                    "id": result[0],
-                    "email": result[1],
-                    "nome": result[2],
-                    "ativo": bool(result[3]),
-                    "primeiro_acesso": bool(result[4]),
-                    "chave_acesso": result[5]
-                }
-                if not user_dict["chave_acesso"]:
-                    user_dict["chave_acesso"] = garantir_chave_acesso(user_dict["id"])
-                return user_dict
-            return None
-    except Exception:
-        return None
-
-def atualizar_senha_primeiro_acesso(user_id, nova_senha):
-    try:
-        with engine.begin() as conn:
-            up_query = text("""
-                UPDATE usuarios 
-                SET senha_hash = crypt(:nova_senha, gen_salt('bf')),
-                    primeiro_acesso = FALSE
-                WHERE id = :uid;
-            """)
-            conn.execute(up_query, {"uid": user_id, "nova_senha": nova_senha})
-            return True, "Senha cadastrada com sucesso!"
-    except Exception as e:
-        return False, f"Erro: {str(e)}"
-
-def atualizar_senha_usuario(user_id, senha_atual, nova_senha):
-    try:
-        with engine.begin() as conn:
-            check_query = text("""
-                SELECT id FROM usuarios 
-                WHERE id = :uid 
-                  AND (
-                      senha_hash = crypt(:senha_atual, senha_hash)
-                      OR senha_hash = :senha_atual
-                  );
-            """)
-            valido = conn.execute(check_query, {"uid": user_id, "senha_atual": senha_atual}).fetchone()
-            if not valido:
-                return False, "Senha atual incorreta."
-
-            up_query = text("""
-                UPDATE usuarios 
-                SET senha_hash = crypt(:nova_senha, gen_salt('bf')),
-                    primeiro_acesso = FALSE
-                WHERE id = :uid;
-            """)
-            conn.execute(up_query, {"uid": user_id, "nova_senha": nova_senha})
-            return True, "Senha alterada com sucesso!"
-    except Exception as e:
-        return False, f"Erro: {str(e)}"
 
 def verificar_login():
     if "usuario_logado" not in st.session_state:
         st.session_state["usuario_logado"] = None
 
-    # 1. Recupera chave via URL ou via Cookie nativo da requisição
+    # Se vier com link direto (?acesso=CHAVE), conecta imediatamente
     chave_url = st.query_params.get("acesso")
-    cookie_chave = None
-    try:
-        cookie_chave = st.context.cookies.get("cmp_token")
-    except Exception:
-        pass
-
-    chave_identificada = chave_url or cookie_chave
-
-    if chave_identificada and st.session_state["usuario_logado"] is None:
-        user = buscar_usuario_por_chave(chave_identificada)
-        if user:
-            if user["ativo"]:
-                st.session_state["usuario_logado"] = user
-                gravar_cookie_cliente(chave_identificada)
-                return True
-            else:
-                apagar_cookie_cliente()
-                st.error("⛔ Sua assinatura está inativa.")
-                st.stop()
-        else:
-            apagar_cookie_cliente()
-            st.query_params.clear()
+    if chave_url and st.session_state["usuario_logado"] is None:
+        user_chave = buscar_usuario_por_chave(chave_url)
+        if user_chave and user_chave["ativo"]:
+            st.session_state["usuario_logado"] = user_chave
+            return True
 
     if st.session_state["usuario_logado"] is not None:
         return True
 
-    # 2. Tela de Login Manual
+    # --- TELA DE SELEÇÃO RÁPIDA COM 1 TOQUE ---
     col_vazia1, col_centro, col_vazia2 = st.columns([1, 2.5, 1])
     with col_centro:
-        st.markdown("<div style='height: 40px;'></div>", unsafe_allow_html=True)
-        st.markdown("### 🔒 Acesso ao Sistema")
-        st.caption("Introduza seu e-mail e senha cadastrados para entrar.")
+        st.markdown("<div style='height: 35px;'></div>", unsafe_allow_html=True)
+        st.markdown("<h2 style='text-align: center;'>🚗 Quem está dirigindo hoje?</h2>", unsafe_allow_html=True)
+        st.caption("<p style='text-align: center;'>Selecione o seu perfil para abrir o painel direto:</p>", unsafe_allow_html=True)
 
-        with st.form("form_login"):
-            email_input = st.text_input("E-mail", placeholder="seu_email@exemplo.com").strip().lower()
-            senha_input = st.text_input("Senha", type="password", placeholder="••••••••")
-            btn_entrar = st.form_submit_button("🔓 Entrar", use_container_width=True, type="primary")
+        motoristas = listar_motoristas_ativos()
 
-            if btn_entrar:
-                if not email_input or not senha_input:
-                    st.error("Preencha todos os campos.")
-                else:
-                    dados_user = autenticar_usuario_senha(email_input, senha_input)
-                    if dados_user:
-                        if not dados_user["ativo"]:
-                            st.error("⛔ Sua assinatura está inativa.")
-                        else:
-                            st.session_state["usuario_logado"] = dados_user
-                            chave = dados_user.get("chave_acesso")
-                            if chave:
-                                st.query_params["acesso"] = chave
-                                gravar_cookie_cliente(chave)
-                            st.rerun()
-                    else:
-                        st.error("E-mail ou senha incorretos.")
+        if not motoristas:
+            st.info("Nenhum motorista ativo encontrado no banco de dados.")
+        else:
+            for mot in motoristas:
+                label_btn = f"👤 {mot['nome']}"
+                if st.button(label_btn, key=f"btn_user_{mot['id']}", use_container_width=True, type="primary"):
+                    st.session_state["usuario_logado"] = buscar_usuario_por_id(mot["id"])
+                    st.rerun()
 
     return False
 
 if not verificar_login():
     st.stop()
 
-# Usuário logado
+# Dados do usuário ativo
 usuario_atual = st.session_state["usuario_logado"]
 USUARIO_ID = usuario_atual["id"]
 NOME_EXIBICAO = usuario_atual["nome"] if usuario_atual["nome"] else usuario_atual["email"]
-CHAVE_ACESSO = usuario_atual.get("chave_acesso", "")
 
-# Garante cookie ativo
-if CHAVE_ACESSO:
-    gravar_cookie_cliente(CHAVE_ACESSO)
-
-# --- BLOQUEIO E TELA OBRIGATÓRIA DE PRIMEIRO ACESSO ---
-if usuario_atual.get("primeiro_acesso", False):
-    col_v1, col_centro, col_v2 = st.columns([1, 2.5, 1])
-    with col_centro:
-        st.markdown("<div style='height: 30px;'></div>", unsafe_allow_html=True)
-        st.markdown("### 🛡️ Defina sua Senha Pessoal")
-        st.info("👋 Olá! Este é o seu primeiro acesso. Defina uma senha segura para sua conta.")
-
-        with st.form("form_primeiro_acesso"):
-            nova_senha_pa = st.text_input("Nova Senha:", type="password", placeholder="Mínimo 6 caracteres")
-            conf_senha_pa = st.text_input("Confirme a Nova Senha:", type="password", placeholder="Repita a nova senha")
-            btn_salvar_pa = st.form_submit_button("💾 Salvar Senha e Liberar Acesso", type="primary", use_container_width=True)
-
-            if btn_salvar_pa:
-                if not nova_senha_pa or not conf_senha_pa:
-                    st.error("Preencha todos os campos.")
-                elif len(nova_senha_pa) < 6:
-                    st.error("A nova senha deve ter no mínimo 6 caracteres.")
-                elif nova_senha_pa != conf_senha_pa:
-                    st.error("As senhas digitadas não coincidem.")
-                else:
-                    sucesso, msg = atualizar_senha_primeiro_acesso(USUARIO_ID, nova_senha_pa)
-                    if sucesso:
-                        usuario_atual["primeiro_acesso"] = False
-                        st.session_state["usuario_logado"] = usuario_atual
-                        st.session_state["msg_sucesso"] = "Senha definida com sucesso!"
-                        st.rerun()
-                    else:
-                        st.error(msg)
-    st.stop()
-
-# Modal para Alteração de Senha
-@st.dialog("🔑 Alterar Palavra-passe")
-def modal_alterar_senha(user_id):
-    st.write("Crie uma nova senha de acesso segura para sua conta.")
-    with st.form("form_mudar_senha"):
-        s_atual = st.text_input("Senha Atual:", type="password", placeholder="Sua senha atual")
-        s_nova = st.text_input("Nova Senha:", type="password", placeholder="No mínimo 6 caracteres")
-        s_conf = st.text_input("Confirme a Nova Senha:", type="password", placeholder="Repita a nova senha")
-        
-        btn_salvar_senha = st.form_submit_button("💾 Atualizar Senha", type="primary", use_container_width=True)
-
-        if btn_salvar_senha:
-            if not s_atual or not s_nova or not s_conf:
-                st.error("Preencha todos os campos.")
-            elif len(s_nova) < 6:
-                st.error("A nova senha deve ter pelo menos 6 caracteres.")
-            elif s_nova != s_conf:
-                st.error("A confirmação não coincide com a nova senha.")
-            else:
-                ok, msg = atualizar_senha_usuario(user_id, s_atual, s_nova)
-                if ok:
-                    st.session_state["msg_sucesso"] = "Senha atualizada com sucesso!"
-                    st.rerun()
-                else:
-                    st.error(msg)
-
-# Barra Superior
-c_titulo, c_senha, c_sair = st.columns([4.2, 1.4, 1.2])
+# --- BARRA SUPERIOR COM IDENTIFICAÇÃO E TROCA RÁPIDA ---
+c_titulo, c_sair = st.columns([4.2, 1.8])
 with c_titulo:
     st.title("🚗 Gestão de Turnos & Finanças")
-    st.caption(f"👤 Conectado como: **{NOME_EXIBICAO}**")
-with c_senha:
-    st.markdown("<div style='height: 18px;'></div>", unsafe_allow_html=True)
-    if st.button("🔑 Alterar Senha", use_container_width=True):
-        modal_alterar_senha(USUARIO_ID)
+    st.caption(f"👤 Motorista ativo: **{NOME_EXIBICAO}**")
 with c_sair:
     st.markdown("<div style='height: 18px;'></div>", unsafe_allow_html=True)
-    if st.button("🚪 Sair", use_container_width=True):
-        apagar_cookie_cliente()
+    if st.button("🚪 Trocar de Perfil", use_container_width=True):
         st.query_params.clear()
         st.session_state["usuario_logado"] = None
         st.rerun()
@@ -500,20 +325,91 @@ def deletar_registro(id_reg, user_id):
         conn.execute(text('DELETE FROM lancamentos WHERE id = :id AND usuario_id = :uid'), {"id": id_reg, "uid": user_id})
     carregar_dados.clear()
 
-# Carregamento filtrado pelo usuário logado
+# Gerador de Dossiê para IA
+def gerar_dossie_ia(df_periodo, df_km_periodo, d_ini, d_end):
+    if df_periodo.empty and df_km_periodo.empty:
+        return "Nenhum dado encontrado para o período."
+
+    df_local = df_periodo.copy()
+    if not df_local.empty:
+        df_local["dia_semana"] = df_local["data"].dt.dayofweek.map(DIAS_SEMANA_PT)
+        tot_rec = df_local[df_local["tipo"] == "Receita"]["valor"].sum()
+        tot_desp = df_local[df_local["tipo"] == "Despesa"]["valor"].sum()
+    else:
+        tot_rec, tot_desp = 0.0, 0.0
+
+    lucro = tot_rec - tot_desp
+    margem = (lucro / tot_rec * 100) if tot_rec > 0 else 0.0
+
+    tot_km = int(round(df_km_periodo["km_rodado"].dropna().sum())) if not df_km_periodo.empty else 0
+    rec_por_km = (tot_rec / tot_km) if tot_km > 0 else 0.0
+    custo_por_km = (tot_desp / tot_km) if tot_km > 0 else 0.0
+    lucro_por_km = (lucro / tot_km) if tot_km > 0 else 0.0
+
+    dias_trabalhados = df_local["data"].dt.date.nunique() if not df_local.empty else df_km_periodo["data"].dt.date.nunique()
+    media_lucro_dia = (lucro / dias_trabalhados) if dias_trabalhados > 0 else 0.0
+    media_km_dia = (tot_km / dias_trabalhados) if dias_trabalhados > 0 else 0
+
+    rec_por_cat = df_local[df_local["tipo"] == "Receita"].groupby("categoria")["valor"].sum().to_dict() if not df_local.empty else {}
+    desp_por_cat = df_local[df_local["tipo"] == "Despesa"].groupby("categoria")["valor"].sum().to_dict() if not df_local.empty else {}
+
+    prompt_linhas = [
+        "# RELATÓRIO OPERACIONAL E FINANCEIRO — MOTORISTA DE APLICATIVO",
+        "",
+        "## INSTRUÇÕES PARA A INTELIGÊNCIA ARTIFICIAL",
+        "Você é um consultor financeiro e de estratégia operacional para motoristas de aplicativo.",
+        "Analise os dados financeiros e MÉTRICAS DE QUILOMETRAGEM (R$/km, Custo/km e Lucro/km) para apontar como aumentar o lucro.",
+        "Nota: O motorista registra múltiplos turnos por dia, descartando KMs de uso particular entre as pausas.",
+        "",
+        "### REGRAS CONTÁBEIS IMPORTANTES:",
+        "- **99 com pedágios:** Já embute o reembolso dos pedágios.",
+        "- **Uber sem pedágios:** Não inclui pedágios (estes estão sob 'Pedágio Uber').",
+        "- **SemParar do dia / Pedágios:** Custo real pago pelo motorista. Não deduza pedágios duas vezes.",
+        "",
+        "---",
+        "## 1. RESUMO EXECUTIVO DO PERÍODO",
+        f"- **Período:** {d_ini.strftime('%d/%m/%Y')} até {d_end.strftime('%d/%m/%Y')}",
+        f"- **Dias Trabalhados:** {dias_trabalhados} dia(s)",
+        f"- **Quilometragem Total Trabalhada:** {formata_km(tot_km)} (Média: {formata_km(media_km_dia)}/dia)",
+        f"- **Faturamento Bruto:** {formata_real(tot_rec)}",
+        f"- **Despesas Totais:** {formata_real(tot_desp)}",
+        f"- **Lucro Líquido:** {formata_real(lucro)}",
+        f"- **Margem Líquida:** {margem:.1f}%",
+        f"- **Retorno Bruto por KM (R$/km):** {formata_real(rec_por_km)} / km",
+        f"- **Custo por KM Rodado:** {formata_real(custo_por_km)} / km",
+        f"- **Lucro Líquido Real por KM:** {formata_real(lucro_por_km)} / km",
+        f"- **Média de Lucro Líquido por Dia:** {formata_real(media_lucro_dia)} / dia",
+        "",
+        "---",
+        "## 2. ORIGEM DAS RECEITAS"
+    ]
+
+    for cat, val in rec_por_cat.items():
+        pct = (val / tot_rec * 100) if tot_rec > 0 else 0
+        prompt_linhas.append(f"- **{cat}:** {formata_real(val)} ({pct:.1f}%)")
+
+    prompt_linhas.extend(["", "---", "## 3. COMPOSIÇÃO DOS CUSTOS"])
+    for cat, val in desp_por_cat.items():
+        pct_rec = (val / tot_rec * 100) if tot_rec > 0 else 0
+        prompt_linhas.append(f"- **{cat}:** {formata_real(val)} (consome {pct_rec:.1f}% da receita)")
+
+    return "\n".join(prompt_linhas)
+
+# Carregamento filtrado pelo usuário selecionado
 df_completo = carregar_dados(USUARIO_ID)
 df_turnos_km = carregar_turnos_km(USUARIO_ID)
 
 if "msg_sucesso" in st.session_state:
     st.success(st.session_state.pop("msg_sucesso"))
 
+# Estado da data
 if "data_operacao" not in st.session_state:
     st.session_state["data_operacao"] = obter_data_hoje()
 
 if "date_ver" not in st.session_state:
     st.session_state["date_ver"] = 0
 
-# Modais de Edição
+# Modal de Edição de Turno
 @st.dialog("✏️ Editar Turno de KM")
 def modal_editar_turno(turno_id, km_ini_atual, km_fim_atual):
     st.write(f"Editar Odômetros do **Turno #{turno_id}**:")
@@ -536,6 +432,7 @@ def modal_editar_turno(turno_id, km_ini_atual, km_fim_atual):
         if st.button("✖️ Cancelar", use_container_width=True):
             st.rerun()
 
+# Modal Dinâmico de Edição do Dia
 @st.dialog("✏️ Editar Lançamento do Dia")
 def modal_editar_lancamento_dia(data_ref, lancamentos_dia_df):
     if lancamentos_dia_df.empty:
@@ -584,6 +481,7 @@ def modal_editar_lancamento_dia(data_ref, lancamentos_dia_df):
             st.session_state["msg_sucesso"] = f"Lançamento #{item_id} excluído!"
             st.rerun()
 
+# Modal Padrão de Edição (Aba Histórico)
 @st.dialog("✏️ Editar Lançamento")
 def modal_editar_registro(item_id, item_data, item_tipo, item_cat, item_desc, item_val):
     badge = "🟢" if item_tipo == "Receita" else "🔴"
@@ -622,6 +520,9 @@ def modal_excluir_registro(item_id, item_cat, item_val_formatado):
 # Abas Operacionais
 tab_operacao, tab_gerenciar = st.tabs(["⚡ Operação do Dia (Turnos & Parciais)", "⚙️ Histórico Financeiro"])
 
+# ==============================================================
+# ABA 1: OPERAÇÃO DO DIA
+# ==============================================================
 with tab_operacao:
     st.markdown("**Data de Trabalho:**")
     c_h, c_o, c_d = st.columns([1, 1, 2])
@@ -648,6 +549,7 @@ with tab_operacao:
     total_km_dia = int(round(turnos_do_dia["km_rodado"].dropna().sum())) if not turnos_do_dia.empty else 0
     lancamentos_hoje = df_completo[df_completo["data"].dt.date == data_atual] if not df_completo.empty else pd.DataFrame()
 
+    # --- SEÇÃO 1: TURNOS DE QUILOMETRAGEM ---
     st.markdown("---")
     st.markdown("#### 🚗 1. Turnos de Trabalho (Quilometragem)")
     if not turnos_do_dia.empty:
@@ -718,6 +620,7 @@ with tab_operacao:
                     st.session_state["msg_sucesso"] = f"Turno iniciado em {val_ki:,} km!".replace(",", ".")
                     st.rerun()
 
+    # --- SEÇÃO 2: LANÇAMENTO RÁPIDO NO DIA ---
     st.markdown("---")
     st.markdown("#### ⚡ 2. Lançamento Rápido no Dia")
     col_sel_tipo, col_sel_cat = st.columns(2)
@@ -756,6 +659,7 @@ with tab_operacao:
                 st.session_state["msg_sucesso"] = f"{tipo_bd} de {formata_real(v_calc)} salva com sucesso!"
                 st.rerun()
 
+    # --- SEÇÃO 3: FECHAMENTO GERAL DO DIA ---
     st.markdown("---")
     st.markdown("#### 🏁 3. Fechamento Geral do Dia")
     col_km_soma1, col_km_soma2 = st.columns([2.5, 1])
@@ -860,6 +764,9 @@ with tab_operacao:
             obs_txt = f" - *{row['descricao']}*" if row["descricao"] else ""
             st.markdown(f"{t_icon} **{row['categoria']}**: **{formata_real(row['valor'])}**{obs_txt}")
 
+# ==============================================================
+# ABA 2: GERENCIAR REGISTROS
+# ==============================================================
 with tab_gerenciar:
     if df_completo.empty:
         st.info("Nenhum lançamento financeiro registrado.")
@@ -1002,8 +909,13 @@ if not df_f.empty:
             hide_index=True
         )
 
-        csv_data = df_tab[["id", "data", "tipo", "categoria", "valor", "descricao"]].to_csv(index=False).encode('utf-8')
-        st.download_button(label="📥 Baixar Dados (CSV)", data=csv_data, file_name="financeiro.csv", mime="text/csv")
+        col_exp1, col_exp2 = st.columns(2)
+        with col_exp1:
+            csv_data = df_tab[["id", "data", "tipo", "categoria", "valor", "descricao"]].to_csv(index=False).encode('utf-8')
+            st.download_button(label="📥 Baixar Dados (CSV)", data=csv_data, file_name="financeiro.csv", mime="text/csv", use_container_width=True)
+        with col_exp2:
+            dossie_txt = gerar_dossie_ia(df_f, df_km_f, d_inicio, d_fim)
+            st.download_button(label="🤖 Baixar Dossiê para IA (.md)", data=dossie_txt.encode('utf-8'), file_name="dossie_ia.md", mime="text/markdown", type="primary", use_container_width=True)
 else:
     st.info("Nenhum lançamento no período.")
 
