@@ -6,7 +6,6 @@ import plotly.express as px
 from sqlalchemy import create_engine, text
 import streamlit.components.v1 as components
 import secrets
-import urllib.parse
 
 st.set_page_config(
     page_title="Controle Motorista Pro", 
@@ -59,7 +58,7 @@ def get_db_engine():
 
 engine = get_db_engine()
 
-# --- SEGURANÇA E AUTENTICAÇÃO PRIVADA ---
+# --- AUTENTICAÇÃO SEGURA ---
 def garantir_chave_acesso(user_id):
     nova_chave = secrets.token_urlsafe(24)
     try:
@@ -157,12 +156,12 @@ def atualizar_senha_usuario(user_id, senha_atual, nova_senha):
     except Exception as e:
         return False, f"Erro ao atualizar senha: {str(e)}"
 
-# --- VERIFICAÇÃO DE LOGIN STRICT (SEM EXPOSIÇÃO PÚBLICA) ---
+# --- VERIFICAÇÃO DE LOGIN STRICT (SEM EXPOSIÇÃO DE USUÁRIOS) ---
 def verificar_login():
     if "usuario_logado" not in st.session_state:
         st.session_state["usuario_logado"] = None
 
-    # 1. Acesso via Chave Privada na URL (?acesso=CHAVE)
+    # 1. Acesso direto via Link Privado (?acesso=CHAVE)
     chave_url = st.query_params.get("acesso")
     if chave_url and st.session_state["usuario_logado"] is None:
         user_chave = buscar_usuario_por_chave(chave_url)
@@ -174,18 +173,18 @@ def verificar_login():
                 st.error("⛔ Sua assinatura está inativa ou cancelada.")
                 st.stop()
         else:
-            st.error("⚠️ Chave de acesso inválida ou expirada.")
+            st.error("⚠️ Link de acesso inválido ou expirado.")
             st.query_params.clear()
 
     if st.session_state["usuario_logado"] is not None:
         return True
 
-    # 2. Tela de Login Manual Padrão (Sem listar nomes de outros usuários)
+    # 2. Tela de Login Padrão (Sem nomes expostos)
     col_vazia1, col_centro, col_vazia2 = st.columns([1, 2.5, 1])
     with col_centro:
         st.markdown("<div style='height: 40px;'></div>", unsafe_allow_html=True)
         st.markdown("<h3 style='text-align: center;'>🔒 Acesso ao Sistema</h3>", unsafe_allow_html=True)
-        st.caption("<p style='text-align: center;'>Introduza seu e-mail e senha para acessar o painel:</p>", unsafe_allow_html=True)
+        st.caption("<p style='text-align: center;'>Introduza seu e-mail e senha cadastrados:</p>", unsafe_allow_html=True)
 
         with st.form("form_login_seguro"):
             email_input = st.text_input("E-mail:", placeholder="seu_email@exemplo.com").strip().lower()
@@ -222,31 +221,6 @@ CHAVE_ACESSO = usuario_atual.get("chave_acesso", "")
 if CHAVE_ACESSO and st.query_params.get("acesso") != CHAVE_ACESSO:
     st.query_params["acesso"] = CHAVE_ACESSO
 
-URL_PRIVADA = f"https://financeiro-app.streamlit.app/?acesso={CHAVE_ACESSO}"
-TEXTO_WHATSAPP = f"🚗 Meu link de acesso direto ao Controle Motorista Pro:\n{URL_PRIVADA}"
-LINK_WHATSAPP = f"https://api.whatsapp.com/send?text={urllib.parse.quote(TEXTO_WHATSAPP)}"
-
-# Modal de Configuração do Atalho no Celular
-@st.dialog("📲 Acesso com 1 Toque no Celular")
-def modal_atalho_privado(url_privada, link_whatsapp):
-    st.markdown("#### 🔑 Seu Link Exclusivo Sem Senha")
-    st.caption("Este link identifica você diretamente. Guarde-o para acessar sempre logado:")
-    st.code(url_privada, language="text")
-
-    st.markdown("---")
-    st.markdown("#### 1. Salvar no seu WhatsApp (Mais Fácil)")
-    st.write("Envie o link para o seu próprio WhatsApp ou de alguém de confiança para tê-lo sempre à mão:")
-    st.link_button("💬 Enviar Atalho para meu WhatsApp", link_whatsapp, type="primary", use_container_width=True)
-
-    st.markdown("---")
-    st.markdown("#### 2. Como criar o ícone na tela do celular:")
-    st.write("""
-    1. Abra o seu link privativo no **Samsung Internet** (no Android) ou no **Safari** (no iPhone).
-    2. Clique no menu de opções (três traços ou botão de compartilhar).
-    3. Escolha **'Adicionar à tela inicial'**.
-    4. **Pronto!** O ícone criado na tela do seu celular abrirá direto na sua conta, sem pedir login.
-    """)
-
 # Modal para Alteração de Senha
 @st.dialog("🔑 Alterar Senha")
 def modal_alterar_senha(user_id):
@@ -273,18 +247,14 @@ def modal_alterar_senha(user_id):
                 else:
                     st.error(msg)
 
-# --- BARRA SUPERIOR COM ATALHO PRIVADO E LOGOUT ---
-c_titulo, c_atalho, c_senha, c_sair = st.columns([3.0, 1.4, 1.2, 1.0])
+# --- BARRA SUPERIOR ---
+c_titulo, c_senha, c_sair = st.columns([4.2, 1.4, 1.2])
 with c_titulo:
     st.title("🚗 Gestão de Turnos & Finanças")
     st.caption(f"👤 Conectado como: **{NOME_EXIBICAO}**")
-with c_atalho:
-    st.markdown("<div style='height: 18px;'></div>", unsafe_allow_html=True)
-    if st.button("📲 Atalho", use_container_width=True, help="Salvar link direto sem senha"):
-        modal_atalho_privado(URL_PRIVADA, LINK_WHATSAPP)
 with c_senha:
     st.markdown("<div style='height: 18px;'></div>", unsafe_allow_html=True)
-    if st.button("🔑 Senha", use_container_width=True):
+    if st.button("🔑 Alterar Senha", use_container_width=True):
         modal_alterar_senha(USUARIO_ID)
 with c_sair:
     st.markdown("<div style='height: 18px;'></div>", unsafe_allow_html=True)
