@@ -14,13 +14,11 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# Fuso horário oficial de Brasília
 FUSO_SP = ZoneInfo("America/Sao_Paulo")
 
 def obter_data_hoje():
     return datetime.now(FUSO_SP).date()
 
-# Estilização visual moderna e compacta para celular
 st.markdown("""
 <style>
     div[data-testid="stMetricValue"] > div {
@@ -44,7 +42,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# Conexão com o Supabase
+# Conexão Supabase
 raw_url = st.secrets["database"]["url"]
 if raw_url.startswith("postgresql://"):
     raw_url = raw_url.replace("postgresql://", "postgresql+psycopg://", 1)
@@ -60,45 +58,24 @@ def get_db_engine():
 
 engine = get_db_engine()
 
-# --- SINCRONIZADOR DE SESSÃO LOCAL (RESOLVE O INSTALAR ATALHO DO CHROME) ---
-def sincronizar_armazenamento_local(chave=""):
-    if chave:
-        # Quando logado com chave, salva no dispositivo
-        components.html(f"""
-        <script>
-            try {{
-                window.parent.localStorage.setItem('cmp_chave_acesso', '{chave}');
-            }} catch(e) {{}}
-        </script>
-        """, height=0, width=0)
-    else:
-        # Quando abre limpo pelo atalho instalado, recupera e recarrega com o parâmetro
-        components.html("""
-        <script>
-            try {
-                const salvo = window.parent.localStorage.getItem('cmp_chave_acesso');
-                const url = new URL(window.parent.location.href);
-                if (salvo && !url.searchParams.has('acesso')) {
-                    url.searchParams.set('acesso', salvo);
-                    window.parent.location.replace(url.href);
-                }
-            } catch(e) {}
-        </script>
-        """, height=0, width=0)
-
-def limpar_armazenamento_local():
-    components.html("""
+# Script para gravar Cookie no domínio principal (Persistência para o Atalho Instalado)
+def gravar_cookie_cliente(chave):
+    components.html(f"""
     <script>
-        try {
-            window.parent.localStorage.removeItem('cmp_chave_acesso');
-            const url = new URL(window.parent.location.href);
-            url.searchParams.delete('acesso');
-            window.parent.history.replaceState({}, '', url.pathname);
-        } catch(e) {}
+        const d = new Date();
+        d.setTime(d.getTime() + (365*24*60*60*1000));
+        const expires = "expires="+ d.toUTCString();
+        window.parent.document.cookie = "cmp_token=" + "{chave}" + ";" + expires + ";path=/;SameSite=Lax";
     </script>
     """, height=0, width=0)
 
-# --- SISTEMA DE AUTENTICAÇÃO COM LINK ÚNICO E SENHA ---
+def apagar_cookie_cliente():
+    components.html("""
+    <script>
+        window.parent.document.cookie = "cmp_token=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/;";
+    </script>
+    """, height=0, width=0)
+
 def garantir_chave_acesso(user_id):
     nova_chave = secrets.token_urlsafe(20)
     try:
@@ -134,8 +111,7 @@ def buscar_usuario_por_chave(chave_acesso):
                     "chave_acesso": result[5]
                 }
             return None
-    except Exception as e:
-        st.error(f"Erro ao validar chave de acesso: {str(e)}")
+    except Exception:
         return None
 
 def autenticar_usuario_senha(email_digitado, senha_digitada):
@@ -169,8 +145,7 @@ def autenticar_usuario_senha(email_digitado, senha_digitada):
                     user_dict["chave_acesso"] = garantir_chave_acesso(user_dict["id"])
                 return user_dict
             return None
-    except Exception as e:
-        st.error(f"Erro ao verificar credenciais: {str(e)}")
+    except Exception:
         return None
 
 def atualizar_senha_primeiro_acesso(user_id, nova_senha):
@@ -185,7 +160,7 @@ def atualizar_senha_primeiro_acesso(user_id, nova_senha):
             conn.execute(up_query, {"uid": user_id, "nova_senha": nova_senha})
             return True, "Senha cadastrada com sucesso!"
     except Exception as e:
-        return False, f"Erro ao definir nova senha: {str(e)}"
+        return False, f"Erro: {str(e)}"
 
 def atualizar_senha_usuario(user_id, senha_atual, nova_senha):
     try:
@@ -200,7 +175,7 @@ def atualizar_senha_usuario(user_id, senha_atual, nova_senha):
             """)
             valido = conn.execute(check_query, {"uid": user_id, "senha_atual": senha_atual}).fetchone()
             if not valido:
-                return False, "A senha atual informada está incorreta."
+                return False, "Senha atual incorreta."
 
             up_query = text("""
                 UPDATE usuarios 
@@ -211,38 +186,41 @@ def atualizar_senha_usuario(user_id, senha_atual, nova_senha):
             conn.execute(up_query, {"uid": user_id, "nova_senha": nova_senha})
             return True, "Senha alterada com sucesso!"
     except Exception as e:
-        return False, f"Erro ao atualizar senha: {str(e)}"
+        return False, f"Erro: {str(e)}"
 
 def verificar_login():
     if "usuario_logado" not in st.session_state:
         st.session_state["usuario_logado"] = None
 
+    # 1. Recupera chave via URL ou via Cookie nativo da requisição
     chave_url = st.query_params.get("acesso")
+    cookie_chave = None
+    try:
+        cookie_chave = st.context.cookies.get("cmp_token")
+    except Exception:
+        pass
 
-    # 1. VERIFICAÇÃO AUTOMÁTICA VIA PARÂMETRO
-    if chave_url and st.session_state["usuario_logado"] is None:
-        user_chave = buscar_usuario_por_chave(chave_url)
-        if user_chave:
-            if user_chave["ativo"]:
-                st.session_state["usuario_logado"] = user_chave
-                sincronizar_armazenamento_local(chave_url)
+    chave_identificada = chave_url or cookie_chave
+
+    if chave_identificada and st.session_state["usuario_logado"] is None:
+        user = buscar_usuario_por_chave(chave_identificada)
+        if user:
+            if user["ativo"]:
+                st.session_state["usuario_logado"] = user
+                gravar_cookie_cliente(chave_identificada)
                 return True
             else:
-                limpar_armazenamento_local()
-                st.error("⛔ Sua assinatura está inativa. Regularize na plataforma de compra.")
+                apagar_cookie_cliente()
+                st.error("⛔ Sua assinatura está inativa.")
                 st.stop()
         else:
-            limpar_armazenamento_local()
+            apagar_cookie_cliente()
             st.query_params.clear()
-
-    # 2. SE NÃO HOUVER PARÂMETRO NA URL, VERIFICA SE EXISTE NO STORAGE DO APARELHO
-    if not chave_url and st.session_state["usuario_logado"] is None:
-        sincronizar_armazenamento_local()
 
     if st.session_state["usuario_logado"] is not None:
         return True
 
-    # 3. TELA DE LOGIN CONVENCIONAL
+    # 2. Tela de Login Manual
     col_vazia1, col_centro, col_vazia2 = st.columns([1, 2.5, 1])
     with col_centro:
         st.markdown("<div style='height: 40px;'></div>", unsafe_allow_html=True)
@@ -256,21 +234,21 @@ def verificar_login():
 
             if btn_entrar:
                 if not email_input or not senha_input:
-                    st.error("Por favor, preencha o e-mail e a senha.")
+                    st.error("Preencha todos os campos.")
                 else:
                     dados_user = autenticar_usuario_senha(email_input, senha_input)
                     if dados_user:
                         if not dados_user["ativo"]:
-                            st.error("⛔ A sua assinatura está inativa. Regularize o acesso para continuar.")
+                            st.error("⛔ Sua assinatura está inativa.")
                         else:
                             st.session_state["usuario_logado"] = dados_user
                             chave = dados_user.get("chave_acesso")
                             if chave:
                                 st.query_params["acesso"] = chave
-                                sincronizar_armazenamento_local(chave)
+                                gravar_cookie_cliente(chave)
                             st.rerun()
                     else:
-                        st.error("E-mail ou senha incorretos. Verifique suas credenciais.")
+                        st.error("E-mail ou senha incorretos.")
 
     return False
 
@@ -283,11 +261,9 @@ USUARIO_ID = usuario_atual["id"]
 NOME_EXIBICAO = usuario_atual["nome"] if usuario_atual["nome"] else usuario_atual["email"]
 CHAVE_ACESSO = usuario_atual.get("chave_acesso", "")
 
-# Mantém sincronizado no aparelho e na URL
+# Garante cookie ativo
 if CHAVE_ACESSO:
-    if st.query_params.get("acesso") != CHAVE_ACESSO:
-        st.query_params["acesso"] = CHAVE_ACESSO
-    sincronizar_armazenamento_local(CHAVE_ACESSO)
+    gravar_cookie_cliente(CHAVE_ACESSO)
 
 # --- BLOQUEIO E TELA OBRIGATÓRIA DE PRIMEIRO ACESSO ---
 if usuario_atual.get("primeiro_acesso", False):
@@ -314,19 +290,11 @@ if usuario_atual.get("primeiro_acesso", False):
                     if sucesso:
                         usuario_atual["primeiro_acesso"] = False
                         st.session_state["usuario_logado"] = usuario_atual
-                        st.session_state["msg_sucesso"] = "Senha definida com sucesso! Bem-vindo ao painel."
+                        st.session_state["msg_sucesso"] = "Senha definida com sucesso!"
                         st.rerun()
                     else:
                         st.error(msg)
     st.stop()
-
-# Modal para Exibir Link Único do Motorista
-@st.dialog("🔗 Seu Link de Acesso Direto")
-def modal_link_direto(chave):
-    st.write("Guarde este link nos favoritos ou envie para o seu WhatsApp. Ele identifica você automaticamente:")
-    link_direto = f"https://financeiro-app.streamlit.app/?acesso={chave}"
-    st.code(link_direto, language="text")
-    st.caption("📲 Ao abrir esse link no Chrome ou Safari, seu aparelho memoriza o login e você pode usar o atalho direto.")
 
 # Modal para Alteração de Senha
 @st.dialog("🔑 Alterar Palavra-passe")
@@ -354,23 +322,19 @@ def modal_alterar_senha(user_id):
                 else:
                     st.error(msg)
 
-# --- BARRA SUPERIOR COM IDENTIFICAÇÃO E AÇÕES ---
-c_titulo, c_link, c_senha, c_sair = st.columns([3.0, 1.4, 1.2, 1.0])
+# Barra Superior
+c_titulo, c_senha, c_sair = st.columns([4.2, 1.4, 1.2])
 with c_titulo:
     st.title("🚗 Gestão de Turnos & Finanças")
     st.caption(f"👤 Conectado como: **{NOME_EXIBICAO}**")
-with c_link:
-    st.markdown("<div style='height: 18px;'></div>", unsafe_allow_html=True)
-    if st.button("🔗 Meu Link", use_container_width=True, help="Ver link de acesso direto"):
-        modal_link_direto(CHAVE_ACESSO)
 with c_senha:
     st.markdown("<div style='height: 18px;'></div>", unsafe_allow_html=True)
-    if st.button("🔑 Senha", use_container_width=True, help="Alterar senha"):
+    if st.button("🔑 Alterar Senha", use_container_width=True):
         modal_alterar_senha(USUARIO_ID)
 with c_sair:
     st.markdown("<div style='height: 18px;'></div>", unsafe_allow_html=True)
     if st.button("🚪 Sair", use_container_width=True):
-        limpar_armazenamento_local()
+        apagar_cookie_cliente()
         st.query_params.clear()
         st.session_state["usuario_logado"] = None
         st.rerun()
@@ -426,7 +390,7 @@ def converter_km_inteiro(texto):
     except ValueError:
         return None
 
-# Operações de Banco de Dados com Filtro por Usuário
+# Funções de Banco de Dados
 @st.cache_data(ttl=600)
 def carregar_dados(user_id):
     with engine.connect() as conn:
@@ -435,7 +399,6 @@ def carregar_dados(user_id):
             conn, 
             params={"uid": user_id}
         )
-    
     if not df.empty:
         df["data"] = pd.to_datetime(df["data"])
         df["valor"] = df["valor"].astype(float)
@@ -457,7 +420,6 @@ def carregar_turnos_km(user_id):
             conn, 
             params={"uid": user_id}
         )
-    
     if not df_km.empty:
         df_km["data"] = pd.to_datetime(df_km["data"])
         df_km["km_inicial"] = pd.to_numeric(df_km["km_inicial"], errors="coerce")
@@ -538,76 +500,6 @@ def deletar_registro(id_reg, user_id):
         conn.execute(text('DELETE FROM lancamentos WHERE id = :id AND usuario_id = :uid'), {"id": id_reg, "uid": user_id})
     carregar_dados.clear()
 
-# Gerador de Dossiê para IA
-def gerar_dossie_ia(df_periodo, df_km_periodo, d_ini, d_end):
-    if df_periodo.empty and df_km_periodo.empty:
-        return "Nenhum dado encontrado para o período."
-
-    df_local = df_periodo.copy()
-    if not df_local.empty:
-        df_local["dia_semana"] = df_local["data"].dt.dayofweek.map(DIAS_SEMANA_PT)
-        tot_rec = df_local[df_local["tipo"] == "Receita"]["valor"].sum()
-        tot_desp = df_local[df_local["tipo"] == "Despesa"]["valor"].sum()
-    else:
-        tot_rec, tot_desp = 0.0, 0.0
-
-    lucro = tot_rec - tot_desp
-    margem = (lucro / tot_rec * 100) if tot_rec > 0 else 0.0
-
-    tot_km = int(round(df_km_periodo["km_rodado"].dropna().sum())) if not df_km_periodo.empty else 0
-    rec_por_km = (tot_rec / tot_km) if tot_km > 0 else 0.0
-    custo_por_km = (tot_desp / tot_km) if tot_km > 0 else 0.0
-    lucro_por_km = (lucro / tot_km) if tot_km > 0 else 0.0
-
-    dias_trabalhados = df_local["data"].dt.date.nunique() if not df_local.empty else df_km_periodo["data"].dt.date.nunique()
-    media_lucro_dia = (lucro / dias_trabalhados) if dias_trabalhados > 0 else 0.0
-    media_km_dia = (tot_km / dias_trabalhados) if dias_trabalhados > 0 else 0
-
-    rec_por_cat = df_local[df_local["tipo"] == "Receita"].groupby("categoria")["valor"].sum().to_dict() if not df_local.empty else {}
-    desp_por_cat = df_local[df_local["tipo"] == "Despesa"].groupby("categoria")["valor"].sum().to_dict() if not df_local.empty else {}
-
-    prompt_linhas = [
-        "# RELATÓRIO OPERACIONAL E FINANCEIRO — MOTORISTA DE APLICATIVO",
-        "",
-        "## INSTRUÇÕES PARA A INTELIGÊNCIA ARTIFICIAL",
-        "Você é um consultor financeiro e de estratégia operacional para motoristas de aplicativo.",
-        "Analise os dados financeiros e MÉTRICAS DE QUILOMETRAGEM (R$/km, Custo/km e Lucro/km) para apontar como aumentar o lucro.",
-        "Nota: O motorista registra múltiplos turnos por dia, descartando KMs de uso particular entre as pausas.",
-        "",
-        "### REGRAS CONTÁBEIS IMPORTANTES:",
-        "- **99 com pedágios:** Já embute o reembolso dos pedágios.",
-        "- **Uber sem pedágios:** Não inclui pedágios (estes estão sob 'Pedágio Uber').",
-        "- **SemParar do dia / Pedágios:** Custo real pago pelo motorista. Não deduza pedágios duas vezes.",
-        "",
-        "---",
-        "## 1. RESUMO EXECUTIVO DO PERÍODO",
-        f"- **Período:** {d_ini.strftime('%d/%m/%Y')} até {d_end.strftime('%d/%m/%Y')}",
-        f"- **Dias Trabalhados:** {dias_trabalhados} dia(s)",
-        f"- **Quilometragem Total Trabalhada:** {formata_km(tot_km)} (Média: {formata_km(media_km_dia)}/dia)",
-        f"- **Faturamento Bruto:** {formata_real(tot_rec)}",
-        f"- **Despesas Totais:** {formata_real(tot_desp)}",
-        f"- **Lucro Líquido:** {formata_real(lucro)}",
-        f"- **Margem Líquida:** {margem:.1f}%",
-        f"- **Retorno Bruto por KM (R$/km):** {formata_real(rec_por_km)} / km",
-        f"- **Custo por KM Rodado:** {formata_real(custo_por_km)} / km",
-        f"- **Lucro Líquido Real por KM:** {formata_real(lucro_por_km)} / km",
-        f"- **Média de Lucro Líquido por Dia:** {formata_real(media_lucro_dia)} / dia",
-        "",
-        "---",
-        "## 2. ORIGEM DAS RECEITAS"
-    ]
-
-    for cat, val in rec_por_cat.items():
-        pct = (val / tot_rec * 100) if tot_rec > 0 else 0
-        prompt_linhas.append(f"- **{cat}:** {formata_real(val)} ({pct:.1f}%)")
-
-    prompt_linhas.extend(["", "---", "## 3. COMPOSIÇÃO DOS CUSTOS"])
-    for cat, val in desp_por_cat.items():
-        pct_rec = (val / tot_rec * 100) if tot_rec > 0 else 0
-        prompt_linhas.append(f"- **{cat}:** {formata_real(val)} (consome {pct_rec:.1f}% da receita)")
-
-    return "\n".join(prompt_linhas)
-
 # Carregamento filtrado pelo usuário logado
 df_completo = carregar_dados(USUARIO_ID)
 df_turnos_km = carregar_turnos_km(USUARIO_ID)
@@ -615,20 +507,18 @@ df_turnos_km = carregar_turnos_km(USUARIO_ID)
 if "msg_sucesso" in st.session_state:
     st.success(st.session_state.pop("msg_sucesso"))
 
-# Estado da data
 if "data_operacao" not in st.session_state:
     st.session_state["data_operacao"] = obter_data_hoje()
 
 if "date_ver" not in st.session_state:
     st.session_state["date_ver"] = 0
 
-# Modal de Edição de Turno
+# Modais de Edição
 @st.dialog("✏️ Editar Turno de KM")
 def modal_editar_turno(turno_id, km_ini_atual, km_fim_atual):
     st.write(f"Editar Odômetros do **Turno #{turno_id}**:")
     txt_ini = st.text_input("KM Inicial:", value=str(int(km_ini_atual)) if km_ini_atual else "")
     txt_fim = st.text_input("KM Final (opcional):", value=str(int(km_fim_atual)) if km_fim_atual else "")
-    
     col1, col2 = st.columns(2)
     with col1:
         if st.button("💾 Salvar Turno", type="primary", use_container_width=True):
@@ -646,13 +536,11 @@ def modal_editar_turno(turno_id, km_ini_atual, km_fim_atual):
         if st.button("✖️ Cancelar", use_container_width=True):
             st.rerun()
 
-# Modal Dinâmico de Edição do Dia
 @st.dialog("✏️ Editar Lançamento do Dia")
 def modal_editar_lancamento_dia(data_ref, lancamentos_dia_df):
     if lancamentos_dia_df.empty:
         st.info("Nenhum lançamento registrado nesta data.")
         return
-
     mapa_itens = {}
     lista_rotulos = []
     for _, r in lancamentos_dia_df.iterrows():
@@ -667,34 +555,20 @@ def modal_editar_lancamento_dia(data_ref, lancamentos_dia_df):
         }
         lista_rotulos.append(rotulo)
 
-    rotulo_selecionado = st.selectbox(
-        "Selecione o registro para editar (apenas com registro ativo):", 
-        lista_rotulos, 
-        key="sel_edicao_parcial_dia"
-    )
-    
+    rotulo_selecionado = st.selectbox("Selecione o registro para editar:", lista_rotulos)
     item_ativo = mapa_itens[rotulo_selecionado]
     item_id = item_ativo["id"]
     badge = "🟢" if item_ativo["tipo"] == "Receita" else "🔴"
     st.markdown(f"**Tipo:** {badge} **{item_ativo['tipo']}** | **Categoria:** `{item_ativo['categoria']}`")
 
     with st.form(f"form_ed_dinamico_{item_id}"):
-        novo_val_str = st.text_input(
-            "Valor (R$):", 
-            value=f"{item_ativo['valor']:.2f}".replace(".", ","),
-            key=f"val_ed_{item_id}"
-        )
-        nova_desc = st.text_input(
-            "Observação:", 
-            value=item_ativo["descricao"],
-            key=f"desc_ed_{item_id}"
-        )
-
+        novo_val_str = st.text_input("Valor (R$):", value=f"{item_ativo['valor']:.2f}".replace(".", ","), key=f"val_ed_{item_id}")
+        nova_desc = st.text_input("Observação:", value=item_ativo["descricao"], key=f"desc_ed_{item_id}")
         col_b1, col_b2 = st.columns(2)
         with col_b1:
-            btn_salvar = st.form_submit_button("💾 Salvar Alterações", type="primary", use_container_width=True)
+            btn_salvar = st.form_submit_button("💾 Salvar", type="primary", use_container_width=True)
         with col_b2:
-            btn_excluir = st.form_submit_button("🗑️ Excluir Registro", use_container_width=True)
+            btn_excluir = st.form_submit_button("🗑️ Excluir", use_container_width=True)
 
         if btn_salvar:
             v_num = converter_valor(novo_val_str)
@@ -702,25 +576,20 @@ def modal_editar_lancamento_dia(data_ref, lancamentos_dia_df):
                 st.error("Informe um valor maior que zero.")
             else:
                 atualizar_registro(item_id, data_ref, item_ativo["tipo"], item_ativo["categoria"], nova_desc.strip(), v_num, USUARIO_ID)
-                st.session_state["msg_sucesso"] = f"Lançamento #{item_id} atualizado com sucesso!"
+                st.session_state["msg_sucesso"] = f"Lançamento #{item_id} atualizado!"
                 st.rerun()
 
         if btn_excluir:
             deletar_registro(item_id, USUARIO_ID)
-            st.session_state["msg_sucesso"] = f"Lançamento #{item_id} excluído com sucesso!"
+            st.session_state["msg_sucesso"] = f"Lançamento #{item_id} excluído!"
             st.rerun()
 
-# Modal Padrão de Edição (Aba Histórico)
 @st.dialog("✏️ Editar Lançamento")
 def modal_editar_registro(item_id, item_data, item_tipo, item_cat, item_desc, item_val):
     badge = "🟢" if item_tipo == "Receita" else "🔴"
     st.markdown(f"**Tipo:** {badge} **{item_tipo}**")
-    
     with st.form(f"form_ed_{item_id}"):
-        novo_val_str = st.text_input(
-            "Valor (R$):", 
-            value=f"{float(item_val):.2f}".replace(".", ",")
-        )
+        novo_val_str = st.text_input("Valor (R$):", value=f"{float(item_val):.2f}".replace(".", ","))
         opcoes_lista = OPCOES_RECEITA_FORM if item_tipo == "Receita" else OPCOES_DESPESA_FORM
         idx = opcoes_lista.index(item_cat) if item_cat in opcoes_lista else opcoes_lista.index("Outro")
         cat_sel = st.selectbox("Categoria:", opcoes_lista, index=idx)
@@ -750,12 +619,9 @@ def modal_excluir_registro(item_id, item_cat, item_val_formatado):
         if st.button("✖️ Cancelar", use_container_width=True):
             st.rerun()
 
-# Abas Nativas
+# Abas Operacionais
 tab_operacao, tab_gerenciar = st.tabs(["⚡ Operação do Dia (Turnos & Parciais)", "⚙️ Histórico Financeiro"])
 
-# ==============================================================
-# ABA 1: OPERAÇÃO DO DIA (TURNOS, PARCIAIS E FECHAMENTO GERAL)
-# ==============================================================
 with tab_operacao:
     st.markdown("**Data de Trabalho:**")
     c_h, c_o, c_d = st.columns([1, 1, 2])
@@ -770,30 +636,20 @@ with tab_operacao:
             st.session_state["date_ver"] += 1
             st.rerun()
     with c_d:
-        dt_sel = st.date_input(
-            "Data",
-            value=st.session_state["data_operacao"],
-            key=f"data_sel_op_{st.session_state['date_ver']}",
-            label_visibility="collapsed"
-        )
+        dt_sel = st.date_input("Data", value=st.session_state["data_operacao"], key=f"data_sel_op_{st.session_state['date_ver']}", label_visibility="collapsed")
         st.session_state["data_operacao"] = dt_sel
 
     data_atual = st.session_state["data_operacao"]
     st.caption(f"🗓️ A gerir o dia: **{data_atual.strftime('%d/%m/%Y')}** ({DIAS_SEMANA_PT[data_atual.weekday()]})")
 
-    # Filtra turnos e lançamentos do dia
     turnos_do_dia = df_turnos_km[df_turnos_km["data"].dt.date == data_atual].sort_values("id") if not df_turnos_km.empty else pd.DataFrame()
     turno_aberto = turnos_do_dia[turnos_do_dia["km_final"].isnull()] if not turnos_do_dia.empty else pd.DataFrame()
     tem_turno_aberto = not turno_aberto.empty
     total_km_dia = int(round(turnos_do_dia["km_rodado"].dropna().sum())) if not turnos_do_dia.empty else 0
-
     lancamentos_hoje = df_completo[df_completo["data"].dt.date == data_atual] if not df_completo.empty else pd.DataFrame()
 
-    # --- SEÇÃO 1: TURNOS DE QUILOMETRAGEM ---
     st.markdown("---")
     st.markdown("#### 🚗 1. Turnos de Trabalho (Quilometragem)")
-    st.caption("Inicie um turno ao começar a trabalhar e feche ao pausar para atividades particulares.")
-
     if not turnos_do_dia.empty:
         st.markdown(f"**Turnos de trabalho no dia:** (Total acumulado: **{formata_km(total_km_dia)}**)")
         idx_t = 1
@@ -802,7 +658,6 @@ with tab_operacao:
             k_ini = int(t["km_inicial"])
             k_fim = int(t["km_final"]) if pd.notnull(t["km_final"]) else None
             k_rod = int(t["km_rodado"]) if pd.notnull(t["km_rodado"]) else None
-
             col_t_info, col_t_edit, col_t_del = st.columns([5, 1, 1])
             with col_t_info:
                 if k_fim is not None:
@@ -823,7 +678,6 @@ with tab_operacao:
         t_ativo = turno_aberto.iloc[0]
         id_aberto = int(t_ativo["id"])
         km_ini_ativo = int(t_ativo["km_inicial"])
-
         st.warning(f"🔔 **Turno em Aberto:** Iniciado em **{km_ini_ativo:,} km**.".replace(",", "."))
         with st.form("form_fechar_turno"):
             c_kf, c_btnf = st.columns([2, 1])
@@ -864,11 +718,8 @@ with tab_operacao:
                     st.session_state["msg_sucesso"] = f"Turno iniciado em {val_ki:,} km!".replace(",", ".")
                     st.rerun()
 
-    # --- SEÇÃO 2: LANÇAMENTO RÁPIDO PARCIAL ---
     st.markdown("---")
-    st.markdown("#### ⚡ 2. Lançamento Rápido no Dia (Despesas ou Ganhos)")
-    st.caption("Abasteceu, lavou o veículo ou recebeu uma corrida avulsa? Salve aqui imediatamente.")
-
+    st.markdown("#### ⚡ 2. Lançamento Rápido no Dia")
     col_sel_tipo, col_sel_cat = st.columns(2)
     with col_sel_tipo:
         tipo_avulso = st.radio("Tipo:", ["Despesa (Custos)", "Receita (Ganhos)"], horizontal=True, key="rad_tipo_avulso")
@@ -893,7 +744,6 @@ with tab_operacao:
             obs_avulsa = st.text_input("Observação (Opcional):", placeholder="Ex: Posto Shell, Lavagem completa...")
 
         btn_salvar_parcial = st.form_submit_button("💾 Salvar Registro Parcial", type="primary", use_container_width=True)
-
         if btn_salvar_parcial:
             v_calc = converter_valor(val_avulso_str)
             if v_calc <= 0:
@@ -906,11 +756,8 @@ with tab_operacao:
                 st.session_state["msg_sucesso"] = f"{tipo_bd} de {formata_real(v_calc)} salva com sucesso!"
                 st.rerun()
 
-    # --- SEÇÃO 3: FECHAMENTO GERAL DO DIA ---
     st.markdown("---")
-    st.markdown("#### 🏁 3. Fechamento Geral do Dia (Checklist Final)")
-    st.caption("Consolide o encerramento do dia: valide os KMs totais, itens já salvos e lance os pendentes.")
-
+    st.markdown("#### 🏁 3. Fechamento Geral do Dia")
     col_km_soma1, col_km_soma2 = st.columns([2.5, 1])
     with col_km_soma1:
         st.markdown(f"**🚗 Quilometragem Total Trabalhada no Dia:**")
@@ -922,7 +769,6 @@ with tab_operacao:
             qtd_turnos = len(turnos_do_dia)
             st.success(f"✔️ {qtd_turnos} turno(s) fechado(s)")
 
-    # Mapeamento dos itens já lançados hoje
     categorias_lancadas_hoje = {}
     if not lancamentos_hoje.empty:
         for _, row in lancamentos_hoje.iterrows():
@@ -935,7 +781,6 @@ with tab_operacao:
 
     with st.form("form_fechamento_geral_dia"):
         st.markdown("##### 🟢 Ganhos (Receitas do Dia):")
-        
         campos_pendentes_rec = {}
         for cat in OPCOES_RECEITA_FIXAS:
             if cat in categorias_lancadas_hoje:
@@ -947,11 +792,7 @@ with tab_operacao:
                     key=f"lock_rec_{cat}"
                 )
             else:
-                campos_pendentes_rec[cat] = st.text_input(
-                    f"{cat} (R$):",
-                    placeholder="Deixe em branco se não realizou",
-                    key=f"pend_rec_{cat}"
-                )
+                campos_pendentes_rec[cat] = st.text_input(f"{cat} (R$):", placeholder="Deixe em branco se não realizou", key=f"pend_rec_{cat}")
 
         col_or1, col_or2 = st.columns([1.2, 2])
         with col_or1:
@@ -961,7 +802,6 @@ with tab_operacao:
 
         st.markdown("---")
         st.markdown("##### 🔴 Despesas do Dia:")
-        
         campos_pendentes_desp = {}
         for cat in OPCOES_DESPESA_FIXAS:
             if cat in categorias_lancadas_hoje:
@@ -973,11 +813,7 @@ with tab_operacao:
                     key=f"lock_desp_{cat}"
                 )
             else:
-                campos_pendentes_desp[cat] = st.text_input(
-                    f"{cat} (R$):",
-                    placeholder="Deixe em branco se não gastou",
-                    key=f"pend_desp_{cat}"
-                )
+                campos_pendentes_desp[cat] = st.text_input(f"{cat} (R$):", placeholder="Deixe em branco se não gastou", key=f"pend_desp_{cat}")
 
         col_od1, col_od2 = st.columns([1.2, 2])
         with col_od1:
@@ -986,24 +822,19 @@ with tab_operacao:
             obs_outro_fechamento = st.text_input("Especifique o outro custo:", placeholder="Ex: Troca de lâmpada, café...", key="fech_outro_obs")
 
         btn_concluir_dia = st.form_submit_button("🏁 Gravar Fechamento Final do Dia", type="primary", use_container_width=True)
-
         if btn_concluir_dia:
             novos_itens = []
-
             for cat, campo_val in campos_pendentes_rec.items():
                 v = converter_valor(campo_val)
                 if v > 0:
                     novos_itens.append({"tipo": "Receita", "categoria": cat, "descricao": "", "valor": v})
-
             v_outra_rec_num = converter_valor(val_outra_rec)
             if v_outra_rec_num > 0:
                 novos_itens.append({"tipo": "Receita", "categoria": "Outro", "descricao": obs_outra_rec.strip(), "valor": v_outra_rec_num})
-
             for cat, campo_val in campos_pendentes_desp.items():
                 v = converter_valor(campo_val)
                 if v > 0:
                     novos_itens.append({"tipo": "Despesa", "categoria": cat, "descricao": "", "valor": v})
-
             v_outro_num = converter_valor(val_outro_fechamento)
             if v_outro_num > 0:
                 novos_itens.append({"tipo": "Despesa", "categoria": "Outro", "descricao": obs_outro_fechamento.strip(), "valor": v_outro_num})
@@ -1016,7 +847,6 @@ with tab_operacao:
                 st.session_state["msg_sucesso"] = f"Fechamento do dia {data_atual.strftime('%d/%m/%Y')} concluído com sucesso!"
                 st.rerun()
 
-    # Painel dos itens registrados hoje com botão de edição dinâmico
     if not lancamentos_hoje.empty:
         col_cab_hoje, col_btn_ed_hoje = st.columns([4, 1.5])
         with col_cab_hoje:
@@ -1030,9 +860,6 @@ with tab_operacao:
             obs_txt = f" - *{row['descricao']}*" if row["descricao"] else ""
             st.markdown(f"{t_icon} **{row['categoria']}**: **{formata_real(row['valor'])}**{obs_txt}")
 
-# ==============================================================
-# ABA 2: GERENCIAR REGISTROS (HISTÓRICO FINANCEIRO)
-# ==============================================================
 with tab_gerenciar:
     if df_completo.empty:
         st.info("Nenhum lançamento financeiro registrado.")
@@ -1044,16 +871,13 @@ with tab_gerenciar:
                 df_lista["categoria"].str.lower().str.contains(busca, na=False) |
                 df_lista["descricao"].str.lower().str.contains(busca, na=False)
             ]
-
         st.caption(f"A exibir {min(len(df_lista), 40)} de {len(df_lista)} lançamentos")
-
         for _, row in df_lista.head(40).iterrows():
             item_id = int(row["id"])
             item_data = row["data"].date()
             val_formatado = formata_real(row["valor"])
             tipo_icon = "🟢" if row["tipo"] == "Receita" else "🔴"
             obs = f" - *{row['descricao']}*" if row["descricao"] else ""
-
             col_info, col_b1, col_b2 = st.columns([5, 1.2, 1.2])
             with col_info:
                 st.markdown(f"{tipo_icon} **{item_data.strftime('%d/%m/%Y')}** | **{row['categoria']}** | **{val_formatado}**{obs} `(ID: {item_id})`")
@@ -1065,24 +889,15 @@ with tab_gerenciar:
                     modal_excluir_registro(item_id, row["categoria"], val_formatado)
 
 st.markdown("---")
-
-# ==============================================================
-# PAINEL ANALÍTICO & RELATÓRIOS CONSOLIDADOS
-# ==============================================================
 st.subheader("📊 Indicadores de Performance Operacional")
 
-opcoes_periodo = [
-    "Hoje", "Ontem", "Últimos 7 dias", "Últimos 30 dias", 
-    "Semanal", "Mensal", "Anual", "Tudo", "Personalizado"
-]
-
+opcoes_periodo = ["Hoje", "Ontem", "Últimos 7 dias", "Últimos 30 dias", "Semanal", "Mensal", "Anual", "Tudo", "Personalizado"]
 if hasattr(st, "pills"):
     periodo_selecionado = st.pills("Período:", opcoes_periodo, default="Hoje")
 else:
     periodo_selecionado = st.radio("Período:", opcoes_periodo, horizontal=True)
 
 hoje = obter_data_hoje()
-
 if periodo_selecionado == "Hoje":
     d_inicio = hoje
     d_fim = hoje
@@ -1117,7 +932,6 @@ else:
     else:
         d_inicio, d_fim = min_base, max_base
 
-# Filtro dos lançamentos financeiros e de KM
 if not df_completo.empty:
     df_f = df_completo[(df_completo["data"].dt.date >= d_inicio) & (df_completo["data"].dt.date <= d_fim)].copy()
 else:
@@ -1132,33 +946,27 @@ tot_rec = df_f[df_f["tipo"] == "Receita"]["valor"].sum() if not df_f.empty else 
 tot_desp = df_f[df_f["tipo"] == "Despesa"]["valor"].sum() if not df_f.empty else 0.0
 lucro = tot_rec - tot_desp
 margem = (lucro / tot_rec * 100) if tot_rec > 0 else 0.0
-
 tot_km = int(round(df_km_f["km_rodado"].dropna().sum())) if not df_km_f.empty else 0
 rec_km = (tot_rec / tot_km) if tot_km > 0 else 0.0
 custo_km = (tot_desp / tot_km) if tot_km > 0 else 0.0
 lucro_km = (lucro / tot_km) if tot_km > 0 else 0.0
 
-# 1. CARDS DE RESULTADOS FINANCEIROS
 k1, k2, k3 = st.columns(3)
 k1.metric("Faturamento Bruto", formata_real(tot_rec))
 k2.metric("Despesas Totais", formata_real(tot_desp))
 k3.metric("Lucro Líquido", formata_real(lucro), delta=f"{margem:.1f}% margem")
 
-# 2. CARDS DE EFICIÊNCIA DE QUILOMETRAGEM
 m1, m2, m3, m4 = st.columns(4)
 m1.metric("🚗 KM Trabalhados", formata_km(tot_km))
 m2.metric("💰 R$/KM Faturado", formata_real(rec_km))
 m3.metric("⛽ Custo/KM", formata_real(custo_km))
 m4.metric("📈 Lucro Líquido/KM", formata_real(lucro_km))
 
-# --- TABELA DE LANÇAMENTOS DO PERÍODO ---
 st.markdown("---")
 st.markdown("#### 📋 Lançamentos Detalhados")
-
 if not df_f.empty:
     outras_rec = df_f[(df_f["tipo"] == "Receita") & (~df_f["categoria"].isin(OPCOES_RECEITA_FIXAS))]["categoria"].unique().tolist()
     outras_desp = df_f[(df_f["tipo"] == "Despesa") & (~df_f["categoria"].isin(OPCOES_DESPESA_FIXAS))]["categoria"].unique().tolist()
-
     opcoes_filtro = [c for c in OPCOES_RECEITA_FIXAS if c in df_f["categoria"].values]
     if outras_rec:
         opcoes_filtro.append("Outras receitas")
@@ -1166,13 +974,7 @@ if not df_f.empty:
     if outras_desp:
         opcoes_filtro.append("Outras despesas")
 
-    cats_selecionadas = st.multiselect(
-        "Filtrar por Categoria:",
-        options=opcoes_filtro,
-        default=opcoes_filtro,
-        placeholder="Selecione as categorias para apuração..."
-    )
-
+    cats_selecionadas = st.multiselect("Filtrar por Categoria:", options=opcoes_filtro, default=opcoes_filtro)
     cats_ativas = []
     for s in cats_selecionadas:
         if s == "Outras receitas":
@@ -1183,11 +985,9 @@ if not df_f.empty:
             cats_ativas.append(s)
 
     df_tab = df_f[df_f["categoria"].isin(set(cats_ativas))].copy()
-
     if not df_tab.empty:
         df_tab["data_formatada"] = df_tab["data"].dt.strftime("%d/%m/%Y")
         df_tab["valor_formatado"] = df_tab["valor"].apply(lambda v: formata_real(v))
-
         st.dataframe(
             df_tab[["id", "data_formatada", "tipo", "categoria", "valor_formatado", "descricao"]],
             column_config={
@@ -1202,72 +1002,11 @@ if not df_f.empty:
             hide_index=True
         )
 
-        col_exp1, col_exp2 = st.columns(2)
-        with col_exp1:
-            csv_data = df_tab[["id", "data", "tipo", "categoria", "valor", "descricao"]].to_csv(index=False).encode('utf-8')
-            st.download_button(
-                label="📥 Baixar Dados da Tabela (CSV)",
-                data=csv_data,
-                file_name=f"financeiro_{periodo_selecionado.lower().replace(' ', '_')}.csv",
-                mime="text/csv",
-                use_container_width=True
-            )
-        with col_exp2:
-            dossie_txt = gerar_dossie_ia(df_f, df_km_f, d_inicio, d_fim)
-            st.download_button(
-                label="🤖 Baixar Dossiê Completo para IA (.md)",
-                data=dossie_txt.encode('utf-8'),
-                file_name=f"dossie_ia_motorista_{periodo_selecionado.lower().replace(' ', '_')}.md",
-                mime="text/markdown",
-                type="primary",
-                use_container_width=True
-            )
+        csv_data = df_tab[["id", "data", "tipo", "categoria", "valor", "descricao"]].to_csv(index=False).encode('utf-8')
+        st.download_button(label="📥 Baixar Dados (CSV)", data=csv_data, file_name="financeiro.csv", mime="text/csv")
 else:
-    st.info("Nenhum lançamento financeiro no período selecionado.")
+    st.info("Nenhum lançamento no período.")
 
-# --- GRÁFICOS: DISTRIBUIÇÃO E EVOLUÇÃO ---
-if not df_f.empty:
-    st.markdown("---")
-    st.markdown("#### 📊 Distribuição por Origem e Custo")
-    col_p1, col_p2 = st.columns(2)
-
-    df_rec = df_f[df_f["tipo"] == "Receita"]
-    df_desp = df_f[df_f["tipo"] == "Despesa"]
-
-    with col_p1:
-        if not df_rec.empty:
-            fig_p_rec = px.pie(df_rec, names="categoria", values="valor", title="Origem dos Ganhos", hole=0.45)
-            fig_p_rec.update_traces(textposition='inside', textinfo='percent+label')
-            fig_p_rec.update_layout(showlegend=False, margin=dict(l=10, r=10, t=35, b=10))
-            st.plotly_chart(fig_p_rec, use_container_width=True, config={"displayModeBar": False})
-    with col_p2:
-        if not df_desp.empty:
-            fig_p_desp = px.pie(df_desp, names="categoria", values="valor", title="Composição dos Custos", hole=0.45)
-            fig_p_desp.update_traces(textposition='inside', textinfo='percent+label')
-            fig_p_desp.update_layout(showlegend=False, margin=dict(l=10, r=10, t=35, b=10))
-            st.plotly_chart(fig_p_desp, use_container_width=True, config={"displayModeBar": False})
-
-    st.markdown("#### 📈 Evolução no Período")
-    delta_dias = (d_fim - d_inicio).days
-    df_f["agrup"] = df_f["data"].dt.strftime("%d/%m") if delta_dias <= 31 else df_f["data"].dt.strftime("%m/%Y")
-    df_agrup = df_f.groupby(["agrup", "tipo"], sort=False)["valor"].sum().reset_index()
-
-    fig_bar = px.bar(
-        df_agrup, x="agrup", y="valor", color="tipo", barmode="group",
-        labels={"agrup": "Data", "valor": "R$", "tipo": "Tipo"},
-        color_discrete_map={"Receita": "#00CC96", "Despesa": "#EF553B"}
-    )
-    fig_bar.update_layout(
-        margin=dict(l=10, r=10, t=15, b=25),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-        xaxis_title=None,
-        dragmode=False,
-        xaxis=dict(fixedrange=True),
-        yaxis=dict(fixedrange=True)
-    )
-    st.plotly_chart(fig_bar, use_container_width=True, config={"scrollZoom": False, "displayModeBar": False})
-
-# Bloqueio de teclado em inputs de data
 components.html("""
 <script>
     function travarTecladoData() {
