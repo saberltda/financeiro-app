@@ -8,7 +8,7 @@ import streamlit.components.v1 as components
 import secrets
 
 st.set_page_config(
-    page_title="Controle Motorista Pro", 
+    page_title="Saber Uber99", 
     page_icon="🚗", 
     layout="wide",
     initial_sidebar_state="collapsed"
