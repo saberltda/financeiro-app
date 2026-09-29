@@ -6,6 +6,7 @@ import plotly.express as px
 from sqlalchemy import create_engine, text
 import streamlit.components.v1 as components
 import secrets
+import urllib.parse
 
 st.set_page_config(
     page_title="Controle Motorista Pro", 
@@ -161,7 +162,7 @@ def verificar_login():
     if "usuario_logado" not in st.session_state:
         st.session_state["usuario_logado"] = None
 
-    # 1. Acesso via Chave Única Privada na URL (?acesso=CHAVE)
+    # 1. Acesso via Chave Privada na URL (?acesso=CHAVE)
     chave_url = st.query_params.get("acesso")
     if chave_url and st.session_state["usuario_logado"] is None:
         user_chave = buscar_usuario_por_chave(chave_url)
@@ -179,7 +180,7 @@ def verificar_login():
     if st.session_state["usuario_logado"] is not None:
         return True
 
-    # 2. Tela de Login Manual Padrão (Isolamento completo)
+    # 2. Tela de Login Manual Padrão (Sem listar nomes de outros usuários)
     col_vazia1, col_centro, col_vazia2 = st.columns([1, 2.5, 1])
     with col_centro:
         st.markdown("<div style='height: 40px;'></div>", unsafe_allow_html=True)
@@ -218,65 +219,35 @@ USUARIO_ID = usuario_atual["id"]
 NOME_EXIBICAO = usuario_atual["nome"] if usuario_atual["nome"] else usuario_atual["email"]
 CHAVE_ACESSO = usuario_atual.get("chave_acesso", "")
 
-# Garante que o parâmetro de acesso permaneça na URL
 if CHAVE_ACESSO and st.query_params.get("acesso") != CHAVE_ACESSO:
     st.query_params["acesso"] = CHAVE_ACESSO
 
-# URL completa do aplicativo para este usuário
 URL_PRIVADA = f"https://financeiro-app.streamlit.app/?acesso={CHAVE_ACESSO}"
+TEXTO_WHATSAPP = f"🚗 Meu link de acesso direto ao Controle Motorista Pro:\n{URL_PRIVADA}"
+LINK_WHATSAPP = f"https://api.whatsapp.com/send?text={urllib.parse.quote(TEXTO_WHATSAPP)}"
 
-# Gerador do arquivo HTML de atalho que abre direto na conta do usuário
-CONTEUDO_ATALHO_HTML = f"""<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="utf-8">
-    <title>Controle Motorista Pro</title>
-    <meta http-equiv="refresh" content="0; url={URL_PRIVADA}">
-    <script>window.location.href = "{URL_PRIVADA}";</script>
-</head>
-<body style="font-family: sans-serif; text-align: center; padding-top: 50px;">
-    <p>A carregar o seu aplicativo...</p>
-    <p><a href="{URL_PRIVADA}">Clique aqui se não redirecionar automaticamente</a></p>
-</body>
-</html>"""
-
-# Gerador de arquivo de Favoritos de Internet (.url)
-CONTEUDO_FAVORITO_URL = f"""[InternetShortcut]
-URL={URL_PRIVADA}
-IconIndex=0
-"""
-
-# Modal com o Download do Atalho Privado
-@st.dialog("📲 Salvar Atalho de Acesso Rápido")
-def modal_atalho_privado(url_privada, html_content, url_shortcut_content):
-    st.markdown("#### Seu Link de Acesso Exclusivo")
-    st.caption("Com esta chave pessoal, você entra diretamente na sua conta sem digitar senha:")
+# Modal de Configuração do Atalho no Celular
+@st.dialog("📲 Acesso com 1 Toque no Celular")
+def modal_atalho_privado(url_privada, link_whatsapp):
+    st.markdown("#### 🔑 Seu Link Exclusivo Sem Senha")
+    st.caption("Este link identifica você diretamente. Guarde-o para acessar sempre logado:")
     st.code(url_privada, language="text")
 
     st.markdown("---")
-    st.markdown("#### 📥 Baixar Atalho para o Celular / PC")
-    st.write("Baixe o atalho abaixo e salve-o nos arquivos do seu celular ou na área de trabalho. Ao clicar nele, você abre o aplicativo direto conectado:")
+    st.markdown("#### 1. Salvar no seu WhatsApp (Mais Fácil)")
+    st.write("Envie o link para o seu próprio WhatsApp ou de alguém de confiança para tê-lo sempre à mão:")
+    st.link_button("💬 Enviar Atalho para meu WhatsApp", link_whatsapp, type="primary", use_container_width=True)
 
-    col_d1, col_d2 = st.columns(2)
-    with col_d1:
-        st.download_button(
-            label="📥 Baixar Atalho (.html)",
-            data=html_content.encode("utf-8"),
-            file_name="Controle_Motorista.html",
-            mime="text/html",
-            type="primary",
-            use_container_width=True
-        )
-    with col_d2:
-        st.download_button(
-            label="⭐ Baixar Favorito (.url)",
-            data=url_shortcut_content.encode("utf-8"),
-            file_name="Controle_Motorista.url",
-            mime="application/internet-shortcut",
-            use_container_width=True
-        )
+    st.markdown("---")
+    st.markdown("#### 2. Como criar o ícone na tela do celular:")
+    st.write("""
+    1. Abra o seu link privativo no **Samsung Internet** (no Android) ou no **Safari** (no iPhone).
+    2. Clique no menu de opções (três traços ou botão de compartilhar).
+    3. Escolha **'Adicionar à tela inicial'**.
+    4. **Pronto!** O ícone criado na tela do seu celular abrirá direto na sua conta, sem pedir login.
+    """)
 
-# Modal para Alteração Voluntária de Senha
+# Modal para Alteração de Senha
 @st.dialog("🔑 Alterar Senha")
 def modal_alterar_senha(user_id):
     st.write("Crie uma nova senha de acesso para sua conta.")
@@ -309,8 +280,8 @@ with c_titulo:
     st.caption(f"👤 Conectado como: **{NOME_EXIBICAO}**")
 with c_atalho:
     st.markdown("<div style='height: 18px;'></div>", unsafe_allow_html=True)
-    if st.button("📲 Meu Atalho", use_container_width=True, help="Baixar atalho de acesso direto"):
-        modal_atalho_privado(URL_PRIVADA, CONTEUDO_ATALHO_HTML, CONTEUDO_FAVORITO_URL)
+    if st.button("📲 Atalho", use_container_width=True, help="Salvar link direto sem senha"):
+        modal_atalho_privado(URL_PRIVADA, LINK_WHATSAPP)
 with c_senha:
     st.markdown("<div style='height: 18px;'></div>", unsafe_allow_html=True)
     if st.button("🔑 Senha", use_container_width=True):
