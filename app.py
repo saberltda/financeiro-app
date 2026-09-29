@@ -19,8 +19,22 @@ FUSO_SP = ZoneInfo("America/Sao_Paulo")
 def obter_data_hoje():
     return datetime.now(FUSO_SP).date()
 
+# Oculta Share, Menu Streamlit, Rodapé e ajusta espaçamento do topo
 st.markdown("""
 <style>
+    /* Oculta Menu, Botão Share, Barra Superior e Rodapé */
+    #MainMenu {visibility: hidden;}
+    header {visibility: hidden;}
+    footer {visibility: hidden;}
+    div[data-testid="stDecoration"] {display: none;}
+    div[data-testid="stToolbar"] {visibility: hidden; height: 0%; position: fixed;}
+    
+    /* Remove o espaço em branco extra deixado pelo cabeçalho do Streamlit */
+    .block-container {
+        padding-top: 1.5rem !important;
+        padding-bottom: 2rem !important;
+    }
+
     div[data-testid="stMetricValue"] > div {
         font-size: 1.35rem !important;
         font-weight: 700 !important;
