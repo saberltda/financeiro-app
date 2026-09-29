@@ -751,7 +751,7 @@ with tab_operacao:
 
         cat_final_avulsa = cat_avulsa_sel
         if cat_avulsa_sel == "Outro":
-            placeholder_espec = "Ex: Corrida particular avulsa, Gorjeta..." if eh_rec else "Ex: Estacionamento, Lanche, Troca de óleo..."
+            placeholder_espec = "Ex: Corrida particular avulsa, Gorjeta fora do app..." if eh_rec else "Ex: Estacionamento, Lanche..."
             cat_espec = st.text_input("Especifique a categoria *", placeholder=placeholder_espec)
             cat_final_avulsa = cat_espec.strip()
 
@@ -817,7 +817,7 @@ with tab_operacao:
         with col_or1:
             val_outra_rec = st.text_input("Outra Receita (R$):", placeholder="Deixe em branco se não realizou", key="fech_outra_rec_val")
         with col_or2:
-            obs_outra_rec = st.text_input("Especifique a outra receita:", placeholder="Ex: Gorjeta no app, Entrega particular...", key="fech_outra_rec_obs")
+            obs_outra_rec = st.text_input("Especifique a outra receita:", placeholder="Ex: Gorjeta fora do app, Entrega particular...", key="fech_outra_rec_obs")
 
         st.markdown("---")
         st.markdown("##### 🔴 Despesas do Dia:")
