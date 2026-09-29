@@ -26,7 +26,7 @@ st.markdown("""
         font-weight: 700 !important;
     }
     .stButton button {
-        border-radius: 10px;
+        border-radius: 8px;
     }
     .card-fechamento-km {
         padding: 14px 18px;
@@ -42,7 +42,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# Conexão Supabase
+# Conexão blindada com o Supabase
 raw_url = st.secrets["database"]["url"]
 if raw_url.startswith("postgresql://"):
     raw_url = raw_url.replace("postgresql://", "postgresql+psycopg://", 1)
@@ -58,45 +58,17 @@ def get_db_engine():
 
 engine = get_db_engine()
 
-# --- CONSULTAS DE USUÁRIOS E AUTENTICAÇÃO ---
-def listar_contas_ativas():
+# --- SEGURANÇA E AUTENTICAÇÃO PRIVADA ---
+def garantir_chave_acesso(user_id):
+    nova_chave = secrets.token_urlsafe(24)
     try:
-        with engine.connect() as conn:
-            query = text("""
-                SELECT id, COALESCE(nome, email) as nome_exibicao, email, ativo, chave_acesso
-                FROM usuarios
-                WHERE ativo = TRUE
-                ORDER BY nome_exibicao ASC;
-            """)
-            result = conn.execute(query).fetchall()
-            return [
-                {
-                    "id": r[0], 
-                    "nome": r[1], 
-                    "email": r[2], 
-                    "ativo": bool(r[3]),
-                    "chave_acesso": r[4]
-                } 
-                for r in result
-            ]
-    except Exception as e:
-        st.error(f"Erro ao carregar contas ativas: {str(e)}")
-        return []
-
-def buscar_usuario_por_id(user_id):
-    try:
-        with engine.connect() as conn:
-            query = text("SELECT id, email, nome, ativo, chave_acesso FROM usuarios WHERE id = :uid LIMIT 1;")
-            result = conn.execute(query, {"uid": int(user_id)}).fetchone()
-            if result:
-                return {
-                    "id": result[0],
-                    "email": result[1],
-                    "nome": result[2],
-                    "ativo": bool(result[3]),
-                    "chave_acesso": result[4]
-                }
-            return None
+        with engine.begin() as conn:
+            conn.execute(text("""
+                UPDATE usuarios 
+                SET chave_acesso = :k 
+                WHERE id = :uid AND chave_acesso IS NULL;
+            """), {"k": nova_chave, "uid": user_id})
+        return nova_chave
     except Exception:
         return None
 
@@ -105,7 +77,12 @@ def buscar_usuario_por_chave(chave_acesso):
         return None
     try:
         with engine.connect() as conn:
-            query = text("SELECT id, email, nome, ativo, chave_acesso FROM usuarios WHERE chave_acesso = :chave LIMIT 1;")
+            query = text("""
+                SELECT id, email, nome, ativo, chave_acesso
+                FROM usuarios 
+                WHERE chave_acesso = :chave
+                LIMIT 1;
+            """)
             result = conn.execute(query, {"chave": chave_acesso.strip()}).fetchone()
             if result:
                 return {
@@ -138,93 +115,97 @@ def autenticar_usuario_senha(email_digitado, senha_digitada):
             }).fetchone()
             
             if result:
-                return {
+                user_dict = {
                     "id": result[0],
                     "email": result[1],
                     "nome": result[2],
                     "ativo": bool(result[3]),
                     "chave_acesso": result[4]
                 }
+                if not user_dict["chave_acesso"]:
+                    user_dict["chave_acesso"] = garantir_chave_acesso(user_dict["id"])
+                return user_dict
             return None
-    except Exception:
+    except Exception as e:
+        st.error(f"Erro ao verificar credenciais: {str(e)}")
         return None
 
+def atualizar_senha_usuario(user_id, senha_atual, nova_senha):
+    try:
+        with engine.begin() as conn:
+            check_query = text("""
+                SELECT id FROM usuarios 
+                WHERE id = :uid 
+                  AND (
+                      senha_hash = crypt(:senha_atual, senha_hash)
+                      OR senha_hash = :senha_atual
+                  );
+            """)
+            valido = conn.execute(check_query, {"uid": user_id, "senha_atual": senha_atual}).fetchone()
+            if not valido:
+                return False, "A senha atual informada está incorreta."
+
+            up_query = text("""
+                UPDATE usuarios 
+                SET senha_hash = crypt(:nova_senha, gen_salt('bf')),
+                    primeiro_acesso = FALSE
+                WHERE id = :uid;
+            """)
+            conn.execute(up_query, {"uid": user_id, "nova_senha": nova_senha})
+            return True, "Senha alterada com sucesso!"
+    except Exception as e:
+        return False, f"Erro ao atualizar senha: {str(e)}"
+
+# --- VERIFICAÇÃO DE LOGIN STRICT (SEM EXPOSIÇÃO PÚBLICA) ---
 def verificar_login():
     if "usuario_logado" not in st.session_state:
         st.session_state["usuario_logado"] = None
 
-    if "mostrar_form_manual" not in st.session_state:
-        st.session_state["mostrar_form_manual"] = False
-
-    # 1. Se abriu pelo link pessoal (?acesso=CHAVE), entra direto
+    # 1. Acesso via Chave Única Privada na URL (?acesso=CHAVE)
     chave_url = st.query_params.get("acesso")
     if chave_url and st.session_state["usuario_logado"] is None:
         user_chave = buscar_usuario_por_chave(chave_url)
-        if user_chave and user_chave["ativo"]:
-            st.session_state["usuario_logado"] = user_chave
-            return True
+        if user_chave:
+            if user_chave["ativo"]:
+                st.session_state["usuario_logado"] = user_chave
+                return True
+            else:
+                st.error("⛔ Sua assinatura está inativa ou cancelada.")
+                st.stop()
+        else:
+            st.error("⚠️ Chave de acesso inválida ou expirada.")
+            st.query_params.clear()
 
     if st.session_state["usuario_logado"] is not None:
         return True
 
-    # 2. Tela de Acesso
+    # 2. Tela de Login Manual Padrão (Isolamento completo)
     col_vazia1, col_centro, col_vazia2 = st.columns([1, 2.5, 1])
     with col_centro:
-        st.markdown("<div style='height: 35px;'></div>", unsafe_allow_html=True)
+        st.markdown("<div style='height: 40px;'></div>", unsafe_allow_html=True)
+        st.markdown("<h3 style='text-align: center;'>🔒 Acesso ao Sistema</h3>", unsafe_allow_html=True)
+        st.caption("<p style='text-align: center;'>Introduza seu e-mail e senha para acessar o painel:</p>", unsafe_allow_html=True)
 
-        if not st.session_state["mostrar_form_manual"]:
-            st.markdown("<h2 style='text-align: center;'>🚗 Entrar em conta logada</h2>", unsafe_allow_html=True)
-            st.caption("<p style='text-align: center;'>Selecione sua conta para abrir o painel direto:</p>", unsafe_allow_html=True)
+        with st.form("form_login_seguro"):
+            email_input = st.text_input("E-mail:", placeholder="seu_email@exemplo.com").strip().lower()
+            senha_input = st.text_input("Senha:", type="password", placeholder="••••••••")
+            btn_entrar = st.form_submit_button("🔓 Entrar", use_container_width=True, type="primary")
 
-            contas = listar_contas_ativas()
-
-            if contas:
-                for c in contas:
-                    nome_label = f"👤 {c['nome']}"
-                    if st.button(nome_label, key=f"btn_conta_{c['id']}", use_container_width=True, type="primary"):
-                        st.session_state["usuario_logado"] = buscar_usuario_por_id(c["id"])
-                        st.rerun()
-            else:
-                st.info("Nenhuma conta cadastrada ou ativa no momento.")
-
-            st.markdown("<div style='height: 15px;'></div>", unsafe_allow_html=True)
-            st.markdown("---")
-
-            if st.button("🔑 Logar em outra conta", use_container_width=True):
-                st.session_state["mostrar_form_manual"] = True
-                st.rerun()
-
-        else:
-            st.markdown("<h2 style='text-align: center;'>🔒 Acesso com E-mail e Senha</h2>", unsafe_allow_html=True)
-            st.caption("<p style='text-align: center;'>Preencha suas credenciais completas:</p>", unsafe_allow_html=True)
-
-            with st.form("form_login_outro"):
-                email_input = st.text_input("E-mail:", placeholder="seu_email@exemplo.com").strip().lower()
-                senha_input = st.text_input("Senha:", type="password", placeholder="••••••••")
-                col_b1, col_b2 = st.columns(2)
-                with col_b1:
-                    btn_entrar = st.form_submit_button("🔓 Entrar", type="primary", use_container_width=True)
-                with col_b2:
-                    btn_voltar = st.form_submit_button("⬅️ Voltar", use_container_width=True)
-
-                if btn_entrar:
-                    if not email_input or not senha_input:
-                        st.error("Preencha todos os campos.")
-                    else:
-                        dados = autenticar_usuario_senha(email_input, senha_input)
-                        if dados:
-                            if not dados["ativo"]:
-                                st.error("⛔ Sua assinatura está inativa.")
-                            else:
-                                st.session_state["usuario_logado"] = dados
-                                st.session_state["mostrar_form_manual"] = False
-                                st.rerun()
+            if btn_entrar:
+                if not email_input or not senha_input:
+                    st.error("Por favor, preencha o e-mail e a senha.")
+                else:
+                    dados_user = autenticar_usuario_senha(email_input, senha_input)
+                    if dados_user:
+                        if not dados_user["ativo"]:
+                            st.error("⛔ Sua assinatura está inativa.")
                         else:
-                            st.error("E-mail ou senha incorretos.")
-
-                if btn_voltar:
-                    st.session_state["mostrar_form_manual"] = False
-                    st.rerun()
+                            st.session_state["usuario_logado"] = dados_user
+                            if dados_user.get("chave_acesso"):
+                                st.query_params["acesso"] = dados_user["chave_acesso"]
+                            st.rerun()
+                    else:
+                        st.error("E-mail ou senha incorretos.")
 
     return False
 
@@ -235,18 +216,110 @@ if not verificar_login():
 usuario_atual = st.session_state["usuario_logado"]
 USUARIO_ID = usuario_atual["id"]
 NOME_EXIBICAO = usuario_atual["nome"] if usuario_atual["nome"] else usuario_atual["email"]
+CHAVE_ACESSO = usuario_atual.get("chave_acesso", "")
 
-# --- BARRA SUPERIOR ---
-c_titulo, c_sair = st.columns([4.2, 1.8])
+# Garante que o parâmetro de acesso permaneça na URL
+if CHAVE_ACESSO and st.query_params.get("acesso") != CHAVE_ACESSO:
+    st.query_params["acesso"] = CHAVE_ACESSO
+
+# URL completa do aplicativo para este usuário
+URL_PRIVADA = f"https://financeiro-app.streamlit.app/?acesso={CHAVE_ACESSO}"
+
+# Gerador do arquivo HTML de atalho que abre direto na conta do usuário
+CONTEUDO_ATALHO_HTML = f"""<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Controle Motorista Pro</title>
+    <meta http-equiv="refresh" content="0; url={URL_PRIVADA}">
+    <script>window.location.href = "{URL_PRIVADA}";</script>
+</head>
+<body style="font-family: sans-serif; text-align: center; padding-top: 50px;">
+    <p>A carregar o seu aplicativo...</p>
+    <p><a href="{URL_PRIVADA}">Clique aqui se não redirecionar automaticamente</a></p>
+</body>
+</html>"""
+
+# Gerador de arquivo de Favoritos de Internet (.url)
+CONTEUDO_FAVORITO_URL = f"""[InternetShortcut]
+URL={URL_PRIVADA}
+IconIndex=0
+"""
+
+# Modal com o Download do Atalho Privado
+@st.dialog("📲 Salvar Atalho de Acesso Rápido")
+def modal_atalho_privado(url_privada, html_content, url_shortcut_content):
+    st.markdown("#### Seu Link de Acesso Exclusivo")
+    st.caption("Com esta chave pessoal, você entra diretamente na sua conta sem digitar senha:")
+    st.code(url_privada, language="text")
+
+    st.markdown("---")
+    st.markdown("#### 📥 Baixar Atalho para o Celular / PC")
+    st.write("Baixe o atalho abaixo e salve-o nos arquivos do seu celular ou na área de trabalho. Ao clicar nele, você abre o aplicativo direto conectado:")
+
+    col_d1, col_d2 = st.columns(2)
+    with col_d1:
+        st.download_button(
+            label="📥 Baixar Atalho (.html)",
+            data=html_content.encode("utf-8"),
+            file_name="Controle_Motorista.html",
+            mime="text/html",
+            type="primary",
+            use_container_width=True
+        )
+    with col_d2:
+        st.download_button(
+            label="⭐ Baixar Favorito (.url)",
+            data=url_shortcut_content.encode("utf-8"),
+            file_name="Controle_Motorista.url",
+            mime="application/internet-shortcut",
+            use_container_width=True
+        )
+
+# Modal para Alteração Voluntária de Senha
+@st.dialog("🔑 Alterar Senha")
+def modal_alterar_senha(user_id):
+    st.write("Crie uma nova senha de acesso para sua conta.")
+    with st.form("form_mudar_senha"):
+        s_atual = st.text_input("Senha Atual:", type="password", placeholder="Sua senha atual")
+        s_nova = st.text_input("Nova Senha:", type="password", placeholder="No mínimo 6 caracteres")
+        s_conf = st.text_input("Confirme a Nova Senha:", type="password", placeholder="Repita a nova senha")
+        
+        btn_salvar_senha = st.form_submit_button("💾 Atualizar Senha", type="primary", use_container_width=True)
+
+        if btn_salvar_senha:
+            if not s_atual or not s_nova or not s_conf:
+                st.error("Preencha todos os campos.")
+            elif len(s_nova) < 6:
+                st.error("A nova senha deve ter pelo menos 6 caracteres.")
+            elif s_nova != s_conf:
+                st.error("A confirmação não coincide com a nova senha.")
+            else:
+                ok, msg = atualizar_senha_usuario(user_id, s_atual, s_nova)
+                if ok:
+                    st.session_state["msg_sucesso"] = "Senha atualizada com sucesso!"
+                    st.rerun()
+                else:
+                    st.error(msg)
+
+# --- BARRA SUPERIOR COM ATALHO PRIVADO E LOGOUT ---
+c_titulo, c_atalho, c_senha, c_sair = st.columns([3.0, 1.4, 1.2, 1.0])
 with c_titulo:
     st.title("🚗 Gestão de Turnos & Finanças")
-    st.caption(f"👤 Motorista ativo: **{NOME_EXIBICAO}**")
+    st.caption(f"👤 Conectado como: **{NOME_EXIBICAO}**")
+with c_atalho:
+    st.markdown("<div style='height: 18px;'></div>", unsafe_allow_html=True)
+    if st.button("📲 Meu Atalho", use_container_width=True, help="Baixar atalho de acesso direto"):
+        modal_atalho_privado(URL_PRIVADA, CONTEUDO_ATALHO_HTML, CONTEUDO_FAVORITO_URL)
+with c_senha:
+    st.markdown("<div style='height: 18px;'></div>", unsafe_allow_html=True)
+    if st.button("🔑 Senha", use_container_width=True):
+        modal_alterar_senha(USUARIO_ID)
 with c_sair:
     st.markdown("<div style='height: 18px;'></div>", unsafe_allow_html=True)
-    if st.button("🚪 Trocar de Perfil", use_container_width=True):
+    if st.button("🚪 Sair", use_container_width=True):
         st.query_params.clear()
         st.session_state["usuario_logado"] = None
-        st.session_state["mostrar_form_manual"] = False
         st.rerun()
 
 # Nomenclaturas fixas
@@ -300,7 +373,7 @@ def converter_km_inteiro(texto):
     except ValueError:
         return None
 
-# Funções de Banco de Dados
+# Funções de Banco de Dados com Filtro Estrito de Usuário
 @st.cache_data(ttl=600)
 def carregar_dados(user_id):
     with engine.connect() as conn:
