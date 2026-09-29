@@ -697,7 +697,10 @@ def modal_tela_lancamentos(data_ref, df_lanc_hoje):
                     st.markdown(f"{badge} **{r['categoria']}**: **{formata_real(r['valor'])}**{obs_mostra}")
                 with col_del:
                     if st.button("🗑️", key=f"btn_del_mod_{r['id']}", use_container_width=True):
-                        modal_excluir_registro(int(r["id"]), r["categoria"], formata_real(r["valor"]))
+                        st.session_state["confirmar_excluir_id"] = int(r["id"])
+                        st.session_state["confirmar_excluir_cat"] = r["categoria"]
+                        st.session_state["confirmar_excluir_val"] = formata_real(r["valor"])
+                        st.rerun()
 
 # Modal Padrão de Edição (Aba Histórico)
 @st.dialog("✏️ Editar Lançamento")
@@ -827,110 +830,143 @@ with tab_operacao:
             st.success(f"✔️ **Todos os turnos fechados** ({qtd_turnos_fechados} turno(s) · {formata_km(total_km_dia)})")
 
         if dia_esta_travado:
-            st.success(f"🔒 Dia **{data_atual.strftime('%d/%m/%Y')}** gravado e concluído no banco de dados.")
+            st.caption("🔒 Dia concluído (salvo). Para alterar, use **Corrigir o dia** na seção 3.")
 
     # --- SEÇÃO 1: TURNOS DE QUILOMETRAGEM ---
     st.markdown("---")
     st.markdown("#### 🚗 1. Turnos de trabalho (quilometragem)")
-    if not turnos_do_dia.empty:
-        st.markdown(f"**Turnos do dia** · Total: **{formata_km(total_km_dia)}**")
-        idx_t = 1
-        for _, t in turnos_do_dia.iterrows():
-            t_id = int(t["id"])
-            k_ini = int(t["km_inicial"])
-            k_fim = int(t["km_final"]) if pd.notnull(t["km_final"]) else None
-            k_rod = int(t["km_rodado"]) if pd.notnull(t["km_rodado"]) else None
-            col_t_info, col_t_edit, col_t_del = st.columns([5, 1, 1])
-            with col_t_info:
+
+    if dia_esta_travado:
+        st.caption("Dia concluído — turnos somente leitura. Use **Corrigir o dia** na seção 3 para alterar.")
+        if not turnos_do_dia.empty:
+            st.markdown(f"**Turnos do dia** · Total: **{formata_km(total_km_dia)}**")
+            idx_t = 1
+            for _, t in turnos_do_dia.iterrows():
+                k_ini = int(t["km_inicial"])
+                k_fim = int(t["km_final"]) if pd.notnull(t["km_final"]) else None
+                k_rod = int(t["km_rodado"]) if pd.notnull(t["km_rodado"]) else None
                 if k_fim is not None:
                     st.markdown(f"✅ **Turno {idx_t}:** {k_ini:,} km ➔ {k_fim:,} km | **+{k_rod} km rodados**".replace(",", "."))
                 else:
                     st.markdown(f"⏳ **Turno {idx_t} (EM CURSO):** Aberto em **{k_ini:,} km**".replace(",", "."))
-            with col_t_edit:
-                if st.button("✏️", key=f"btn_ed_turno_{t_id}", use_container_width=True):
-                    modal_editar_turno(t_id, k_ini, k_fim)
-            with col_t_del:
-                if st.button("🗑️", key=f"btn_del_turno_{t_id}", use_container_width=True):
-                    modal_excluir_turno(t_id, k_ini, k_fim)
-            idx_t += 1
-
-    if tem_turno_aberto:
-        t_ativo = turno_aberto.iloc[0]
-        id_aberto = int(t_ativo["id"])
-        km_ini_ativo = int(t_ativo["km_inicial"])
-        st.warning(f"🔔 **Turno em aberto:** iniciado em **{km_ini_ativo:,} km**.".replace(",", "."))
-        with st.form("form_fechar_turno"):
-            c_kf, c_btnf = st.columns([2, 1])
-            with c_kf:
-                input_km_fim = st.text_input("Odômetro ao encerrar este turno:", placeholder=f"Ex: {km_ini_ativo + 80}")
-            with c_btnf:
-                st.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
-                btn_fechar_t = st.form_submit_button("🏁 Pausar / Fechar turno", type="primary", use_container_width=True)
-
-            if btn_fechar_t:
-                val_kf = converter_km_inteiro(input_km_fim)
-                if val_kf is None or val_kf <= 0:
-                    st.error("Informe um quilometragem final válida (número inteiro).")
-                elif val_kf < km_ini_ativo:
-                    st.error(f"O KM final não pode ser menor que o inicial ({km_ini_ativo:,} km).".replace(",", "."))
-                else:
-                    km_rodado_calc = val_kf - km_ini_ativo
-                    fechar_turno(id_aberto, val_kf, km_rodado_calc, USUARIO_ID)
-                    st.session_state["msg_sucesso"] = f"Turno finalizado! +{km_rodado_calc} km computados."
-                    st.rerun()
+                idx_t += 1
+        else:
+            st.info("Nenhum turno de KM neste dia.")
     else:
-        with st.form("form_abrir_turno"):
-            c_ki, c_btni = st.columns([2, 1])
-            with c_ki:
-                ultimo_km = int(turnos_do_dia["km_final"].dropna().iloc[-1]) if not turnos_do_dia.empty and not turnos_do_dia["km_final"].dropna().empty else ""
-                placeholder_sug = f"Ex: {ultimo_km}" if ultimo_km else "Ex: 85420"
-                input_km_ini = st.text_input("Odômetro ao começar este turno:", value=str(ultimo_km) if ultimo_km else "", placeholder=placeholder_sug)
-            with c_btni:
-                st.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
-                btn_abrir_t = st.form_submit_button("🟢 Iniciar novo turno", type="primary", use_container_width=True)
+        if not turnos_do_dia.empty:
+            st.markdown(f"**Turnos do dia** · Total: **{formata_km(total_km_dia)}**")
+            idx_t = 1
+            for _, t in turnos_do_dia.iterrows():
+                t_id = int(t["id"])
+                k_ini = int(t["km_inicial"])
+                k_fim = int(t["km_final"]) if pd.notnull(t["km_final"]) else None
+                k_rod = int(t["km_rodado"]) if pd.notnull(t["km_rodado"]) else None
+                col_t_info, col_t_edit, col_t_del = st.columns([5, 1, 1])
+                with col_t_info:
+                    if k_fim is not None:
+                        st.markdown(f"✅ **Turno {idx_t}:** {k_ini:,} km ➔ {k_fim:,} km | **+{k_rod} km rodados**".replace(",", "."))
+                    else:
+                        st.markdown(f"⏳ **Turno {idx_t} (EM CURSO):** Aberto em **{k_ini:,} km**".replace(",", "."))
+                with col_t_edit:
+                    if st.button("✏️", key=f"btn_ed_turno_{t_id}", use_container_width=True):
+                        modal_editar_turno(t_id, k_ini, k_fim)
+                with col_t_del:
+                    if st.button("🗑️", key=f"btn_del_turno_{t_id}", use_container_width=True):
+                        modal_excluir_turno(t_id, k_ini, k_fim)
+                idx_t += 1
 
-            if btn_abrir_t:
-                val_ki = converter_km_inteiro(input_km_ini)
-                if val_ki is None or val_ki <= 0:
-                    st.error("Informe um quilometragem inicial válida (número inteiro).")
-                else:
-                    abrir_novo_turno(data_atual, val_ki, USUARIO_ID)
-                    st.session_state["msg_sucesso"] = f"Turno iniciado em {val_ki:,} km!".replace(",", ".")
-                    st.rerun()
+        if tem_turno_aberto:
+            t_ativo = turno_aberto.iloc[0]
+            id_aberto = int(t_ativo["id"])
+            km_ini_ativo = int(t_ativo["km_inicial"])
+            st.warning(f"🔔 **Turno em aberto:** iniciado em **{km_ini_ativo:,} km**.".replace(",", "."))
+            with st.form("form_fechar_turno"):
+                c_kf, c_btnf = st.columns([2, 1])
+                with c_kf:
+                    input_km_fim = st.text_input("Odômetro ao encerrar este turno:", placeholder=f"Ex: {km_ini_ativo + 80}")
+                with c_btnf:
+                    st.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
+                    btn_fechar_t = st.form_submit_button("🏁 Pausar / Fechar turno", type="primary", use_container_width=True)
+
+                if btn_fechar_t:
+                    val_kf = converter_km_inteiro(input_km_fim)
+                    if val_kf is None or val_kf <= 0:
+                        st.error("Informe um quilometragem final válida (número inteiro).")
+                    elif val_kf < km_ini_ativo:
+                        st.error(f"O KM final não pode ser menor que o inicial ({km_ini_ativo:,} km).".replace(",", "."))
+                    else:
+                        km_rodado_calc = val_kf - km_ini_ativo
+                        fechar_turno(id_aberto, val_kf, km_rodado_calc, USUARIO_ID)
+                        st.session_state["msg_sucesso"] = f"Turno finalizado! +{km_rodado_calc} km computados."
+                        st.rerun()
+        else:
+            with st.form("form_abrir_turno"):
+                c_ki, c_btni = st.columns([2, 1])
+                with c_ki:
+                    ultimo_km = int(turnos_do_dia["km_final"].dropna().iloc[-1]) if not turnos_do_dia.empty and not turnos_do_dia["km_final"].dropna().empty else ""
+                    placeholder_sug = f"Ex: {ultimo_km}" if ultimo_km else "Ex: 85420"
+                    input_km_ini = st.text_input("Odômetro ao começar este turno:", value=str(ultimo_km) if ultimo_km else "", placeholder=placeholder_sug)
+                with c_btni:
+                    st.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
+                    btn_abrir_t = st.form_submit_button("🟢 Iniciar novo turno", type="primary", use_container_width=True)
+
+                if btn_abrir_t:
+                    val_ki = converter_km_inteiro(input_km_ini)
+                    if val_ki is None or val_ki <= 0:
+                        st.error("Informe um quilometragem inicial válida (número inteiro).")
+                    else:
+                        abrir_novo_turno(data_atual, val_ki, USUARIO_ID)
+                        st.session_state["msg_sucesso"] = f"Turno iniciado em {val_ki:,} km!".replace(",", ".")
+                        st.rerun()
 
     # --- SEÇÃO 2: GANHOS E CUSTOS DO DIA (fluxo único) ---
     st.markdown("---")
     st.markdown("#### 💵 2. Ganhos e custos do dia")
-    st.caption("Registre tudo do dia aqui — parciais ou no fim do expediente. O resumo no topo atualiza na hora.")
 
-    col_btn_lanc, col_info_lanc = st.columns([2.5, 2.5])
-    with col_btn_lanc:
-        if st.button("📝 Adicionar / revisar lançamentos", type="primary", use_container_width=True):
-            modal_tela_lancamentos(data_atual, lancamentos_hoje)
-    with col_info_lanc:
-        qtd_itens_hoje = len(lancamentos_hoje)
-        if qtd_itens_hoje > 0:
-            st.info(f"✔️ {qtd_itens_hoje} lançamento(s) neste dia.")
-        else:
-            st.caption("Nenhum lançamento ainda neste dia.")
-
-    if not lancamentos_hoje.empty:
-        col_cab_hoje, col_btn_ed_hoje = st.columns([4, 1.5])
-        with col_cab_hoje:
+    if dia_esta_travado:
+        st.caption("Dia concluído — lançamentos somente leitura. Use **Corrigir o dia** na seção 3 para alterar.")
+        if not lancamentos_hoje.empty:
             st.markdown(f"**Itens do dia ({len(lancamentos_hoje)}):**")
-        with col_btn_ed_hoje:
-            if st.button("✏️ Editar item", key="btn_abrir_modal_dia", use_container_width=True):
-                modal_editar_lancamento_dia(data_atual, lancamentos_hoje)
-
-        for _, row in lancamentos_hoje.iterrows():
-            t_icon = "🟢" if row["tipo"] == "Receita" else "🔴"
-            obs_txt = f" - *{row['descricao']}*" if row["descricao"] else ""
-            col_item, col_item_del = st.columns([5.5, 1])
-            with col_item:
+            for _, row in lancamentos_hoje.iterrows():
+                t_icon = "🟢" if row["tipo"] == "Receita" else "🔴"
+                obs_txt = f" - *{row['descricao']}*" if row["descricao"] else ""
                 st.markdown(f"{t_icon} **{row['categoria']}**: **{formata_real(row['valor'])}**{obs_txt}")
-            with col_item_del:
-                if st.button("🗑️", key=f"btn_del_lista_{int(row['id'])}", use_container_width=True):
-                    modal_excluir_registro(int(row["id"]), row["categoria"], formata_real(row["valor"]))
+        else:
+            st.info("Nenhum lançamento neste dia.")
+    else:
+        st.caption("Registre tudo do dia aqui — parciais ou no fim do expediente. O resumo no topo atualiza na hora.")
+
+        col_btn_lanc, col_info_lanc = st.columns([2.5, 2.5])
+        with col_btn_lanc:
+            if st.button("📝 Adicionar / revisar lançamentos", type="primary", use_container_width=True):
+                modal_tela_lancamentos(data_atual, lancamentos_hoje)
+        with col_info_lanc:
+            qtd_itens_hoje = len(lancamentos_hoje)
+            if qtd_itens_hoje > 0:
+                st.info(f"✔️ {qtd_itens_hoje} lançamento(s) neste dia.")
+            else:
+                st.caption("Nenhum lançamento ainda neste dia.")
+
+        if not lancamentos_hoje.empty:
+            col_cab_hoje, col_btn_ed_hoje = st.columns([4, 1.5])
+            with col_cab_hoje:
+                st.markdown(f"**Itens do dia ({len(lancamentos_hoje)}):**")
+            with col_btn_ed_hoje:
+                if st.button("✏️ Editar item", key="btn_abrir_modal_dia", use_container_width=True):
+                    modal_editar_lancamento_dia(data_atual, lancamentos_hoje)
+
+            for _, row in lancamentos_hoje.iterrows():
+                t_icon = "🟢" if row["tipo"] == "Receita" else "🔴"
+                obs_txt = f" - *{row['descricao']}*" if row["descricao"] else ""
+                col_item, col_item_del = st.columns([5.5, 1])
+                with col_item:
+                    st.markdown(f"{t_icon} **{row['categoria']}**: **{formata_real(row['valor'])}**{obs_txt}")
+                with col_item_del:
+                    if st.button("🗑️", key=f"btn_del_lista_{int(row['id'])}", use_container_width=True):
+                        st.session_state["confirmar_excluir_id"] = int(row["id"])
+                        st.session_state["confirmar_excluir_cat"] = row["categoria"]
+                        st.session_state["confirmar_excluir_val"] = formata_real(row["valor"])
+                        st.rerun()
 
     # --- SEÇÃO 3: CONCLUIR O DIA (PERSISTÊNCIA COMPLETA NO SUPABASE) ---
     st.markdown("---")
@@ -1016,35 +1052,35 @@ with tab_operacao:
                     if tem_turno_aberto:
                         st.error("Feche todos os turnos de KM antes de concluir o dia.")
                     else:
+                        erros_valor = []
                         novos_itens = []
                         for cat, campo_val in campos_pendentes_rec.items():
                             v = converter_valor(campo_val)
                             if v < 0:
-                                st.error(f"Valor inválido em «{cat}». Use números como 45,50.")
-                                st.stop()
-                            if v > 0:
+                                erros_valor.append(f"Valor inválido em «{cat}». Use números como 45,50.")
+                            elif v > 0:
                                 novos_itens.append({"tipo": "Receita", "categoria": cat, "descricao": "", "valor": v})
                         v_outra_rec_num = converter_valor(val_outra_rec)
                         if v_outra_rec_num < 0:
-                            st.error("Valor inválido em «Outra receita». Use números como 45,50.")
-                            st.stop()
-                        if v_outra_rec_num > 0:
+                            erros_valor.append("Valor inválido em «Outra receita». Use números como 45,50.")
+                        elif v_outra_rec_num > 0:
                             novos_itens.append({"tipo": "Receita", "categoria": "Outro", "descricao": obs_outra_rec.strip(), "valor": v_outra_rec_num})
                         for cat, campo_val in campos_pendentes_desp.items():
                             v = converter_valor(campo_val)
                             if v < 0:
-                                st.error(f"Valor inválido em «{cat}». Use números como 45,50.")
-                                st.stop()
-                            if v > 0:
+                                erros_valor.append(f"Valor inválido em «{cat}». Use números como 45,50.")
+                            elif v > 0:
                                 novos_itens.append({"tipo": "Despesa", "categoria": cat, "descricao": "", "valor": v})
                         v_outro_num = converter_valor(val_outro_fechamento)
                         if v_outro_num < 0:
-                            st.error("Valor inválido em «Outro custo». Use números como 45,50.")
-                            st.stop()
-                        if v_outro_num > 0:
+                            erros_valor.append("Valor inválido em «Outro custo». Use números como 45,50.")
+                        elif v_outro_num > 0:
                             novos_itens.append({"tipo": "Despesa", "categoria": "Outro", "descricao": obs_outro_fechamento.strip(), "valor": v_outro_num})
 
-                        if not novos_itens and not categorias_lancadas_hoje and total_km_dia == 0:
+                        if erros_valor:
+                            for msg_err in erros_valor:
+                                st.error(msg_err)
+                        elif not novos_itens and not categorias_lancadas_hoje and total_km_dia == 0:
                             st.warning("Registre pelo menos um lançamento ou um turno de KM antes de concluir o dia.")
                         else:
                             if novos_itens:
