@@ -733,7 +733,7 @@ with tab_operacao:
                     st.session_state["msg_sucesso"] = f"Turno iniciado em {val_ki:,} km!".replace(",", ".")
                     st.rerun()
 
-    # --- SEÇÃO 2: LANÇAMENTO RÁPIDO NO DIA (CAMPOS TOTALMENTE INTEGRADOS) ---
+    # --- SEÇÃO 2: LANÇAMENTO RÁPIDO NO DIA ---
     st.markdown("---")
     st.markdown("#### ⚡ 2. Lançamento Rápido no Dia")
     st.caption("Lance despesas ou receitas avulsas em um único formulário:")
@@ -815,7 +815,7 @@ with tab_operacao:
 
         col_or1, col_or2 = st.columns([1.2, 2])
         with col_or1:
-            val_outra_rec = st.text_input("Outra Receita (R$):", placeholder="0,00", key="fech_outra_rec_val")
+            val_outra_rec = st.text_input("Outra Receita (R$):", placeholder="Deixe em branco se não realizou", key="fech_outra_rec_val")
         with col_or2:
             obs_outra_rec = st.text_input("Especifique a outra receita:", placeholder="Ex: Gorjeta no app, Entrega particular...", key="fech_outra_rec_obs")
 
@@ -836,7 +836,7 @@ with tab_operacao:
 
         col_od1, col_od2 = st.columns([1.2, 2])
         with col_od1:
-            val_outro_fechamento = st.text_input("Outro Custo (R$):", placeholder="0,00", key="fech_outro_val")
+            val_outro_fechamento = st.text_input("Outro Custo (R$):", placeholder="Deixe em branco se não gastou", key="fech_outro_val")
         with col_od2:
             obs_outro_fechamento = st.text_input("Especifique o outro custo:", placeholder="Ex: Troca de lâmpada, café...", key="fech_outro_obs")
 
