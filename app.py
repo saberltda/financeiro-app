@@ -522,6 +522,10 @@ if "data_operacao" not in st.session_state:
 if "date_ver" not in st.session_state:
     st.session_state["date_ver"] = 0
 
+# Contador de reset para os inputs do Lançamento Rápido
+if "form_seq" not in st.session_state:
+    st.session_state["form_seq"] = 0
+
 # Modal de Edição de Turno
 @st.dialog("✏️ Editar Turno de KM")
 def modal_editar_turno(turno_id, km_ini_atual, km_fim_atual):
@@ -683,7 +687,7 @@ with tab_operacao:
                 if st.button("✏️", key=f"btn_ed_turno_{t_id}", use_container_width=True):
                     modal_editar_turno(t_id, k_ini, k_fim)
             with col_t_del:
-                if st.button("🗑️", key=f"btn_del_turno_{t_id}", use_container_width=True):
+                if st.button("🗑️️", key=f"btn_del_turno_{t_id}", use_container_width=True):
                     deletar_turno_banco(t_id, USUARIO_ID)
                     st.session_state["msg_sucesso"] = f"Turno #{t_id} removido."
                     st.rerun()
@@ -733,43 +737,37 @@ with tab_operacao:
                     st.session_state["msg_sucesso"] = f"Turno iniciado em {val_ki:,} km!".replace(",", ".")
                     st.rerun()
 
-    # --- SEÇÃO 2: LANÇAMENTO RÁPIDO NO DIA (COM ATUALIZAÇÃO IMEDIATA DAS CATEGORIAS) ---
+    # --- SEÇÃO 2: LANÇAMENTO RÁPIDO NO DIA (CAMPOS INTEGRADOS E REATIVOS) ---
     st.markdown("---")
     st.markdown("#### ⚡ 2. Lançamento Rápido no Dia")
     st.caption("Lance despesas ou receitas avulsas com atualização dinâmica das categorias:")
 
-    # Inicialização de chaves para limpeza dos campos após salvar
-    if "input_val_avulso" not in st.session_state:
-        st.session_state["input_val_avulso"] = ""
-    if "input_obs_avulsa" not in st.session_state:
-        st.session_state["input_obs_avulsa"] = ""
-    if "input_outro_avulso" not in st.session_state:
-        st.session_state["input_outro_avulso"] = ""
+    seq = st.session_state["form_seq"]
 
     with st.container(border=True):
         col_tipo, col_cat = st.columns(2)
         with col_tipo:
-            tipo_avulso = st.radio("Tipo:", ["Despesa (Custos)", "Receita (Ganhos)"], horizontal=True, key="rad_tipo_avulso")
+            tipo_avulso = st.radio("Tipo:", ["Despesa (Custos)", "Receita (Ganhos)"], horizontal=True, key=f"rad_tipo_avulso_{seq}")
         
         eh_rec = tipo_avulso == "Receita (Ganhos)"
         opcoes_atuais = OPCOES_RECEITA_FORM if eh_rec else OPCOES_DESPESA_FORM
 
         with col_cat:
-            cat_avulsa_sel = st.selectbox("Categoria:", opcoes_atuais, key=f"box_cat_avulsa_{'rec' if eh_rec else 'desp'}")
+            cat_avulsa_sel = st.selectbox("Categoria:", opcoes_atuais, key=f"box_cat_avulsa_{seq}_{'rec' if eh_rec else 'desp'}")
 
         cat_final_avulsa = cat_avulsa_sel
         if cat_avulsa_sel == "Outro":
             placeholder_espec = "Ex: Corrida particular avulsa, Gorjeta fora do app..." if eh_rec else "Ex: Estacionamento, Lanche..."
-            cat_espec = st.text_input("Especifique a categoria *", placeholder=placeholder_espec, key="input_outro_avulso")
+            cat_espec = st.text_input("Especifique a categoria *", placeholder=placeholder_espec, key=f"input_outro_avulso_{seq}")
             cat_final_avulsa = cat_espec.strip()
 
         col_val_a, col_obs_a = st.columns([1.2, 2])
         with col_val_a:
-            val_avulso_str = st.text_input("Valor (R$):", placeholder="Ex: 50,00 ou 15,50", key="input_val_avulso")
+            val_avulso_str = st.text_input("Valor (R$):", placeholder="Ex: 50,00 ou 15,50", key=f"input_val_avulso_{seq}")
         with col_obs_a:
-            obs_avulsa = st.text_input("Observação (Opcional):", placeholder="Ex: Posto Shell, Lavagem completa...", key="input_obs_avulsa")
+            obs_avulsa = st.text_input("Observação (Opcional):", placeholder="Ex: Posto Shell, Lavagem completa...", key=f"input_obs_avulsa_{seq}")
 
-        if st.button("💾 Salvar Registro Parcial", type="primary", use_container_width=True, key="btn_salvar_parcial_avulso"):
+        if st.button("💾 Salvar Registro Parcial", type="primary", use_container_width=True, key=f"btn_salvar_parcial_avulso_{seq}"):
             v_calc = converter_valor(val_avulso_str)
             if v_calc <= 0:
                 st.error("Indique um valor superior a zero.")
@@ -779,9 +777,7 @@ with tab_operacao:
                 tipo_bd = "Receita" if eh_rec else "Despesa"
                 inserir_registro_avulso(data_atual, tipo_bd, cat_final_avulsa, obs_avulsa.strip(), v_calc, USUARIO_ID)
                 st.session_state["msg_sucesso"] = f"{tipo_bd} de {formata_real(v_calc)} salva com sucesso!"
-                st.session_state["input_val_avulso"] = ""
-                st.session_state["input_obs_avulsa"] = ""
-                st.session_state["input_outro_avulso"] = ""
+                st.session_state["form_seq"] += 1
                 st.rerun()
 
     # --- SEÇÃO 3: FECHAMENTO GERAL DO DIA ---
