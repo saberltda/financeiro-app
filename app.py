@@ -733,12 +733,20 @@ with tab_operacao:
                     st.session_state["msg_sucesso"] = f"Turno iniciado em {val_ki:,} km!".replace(",", ".")
                     st.rerun()
 
-    # --- SEÇÃO 2: LANÇAMENTO RÁPIDO NO DIA ---
+    # --- SEÇÃO 2: LANÇAMENTO RÁPIDO NO DIA (COM ATUALIZAÇÃO IMEDIATA DAS CATEGORIAS) ---
     st.markdown("---")
     st.markdown("#### ⚡ 2. Lançamento Rápido no Dia")
-    st.caption("Lance despesas ou receitas avulsas em um único formulário:")
+    st.caption("Lance despesas ou receitas avulsas com atualização dinâmica das categorias:")
 
-    with st.form("form_lancamento_parcial", clear_on_submit=True):
+    # Inicialização de chaves para limpeza dos campos após salvar
+    if "input_val_avulso" not in st.session_state:
+        st.session_state["input_val_avulso"] = ""
+    if "input_obs_avulsa" not in st.session_state:
+        st.session_state["input_obs_avulsa"] = ""
+    if "input_outro_avulso" not in st.session_state:
+        st.session_state["input_outro_avulso"] = ""
+
+    with st.container(border=True):
         col_tipo, col_cat = st.columns(2)
         with col_tipo:
             tipo_avulso = st.radio("Tipo:", ["Despesa (Custos)", "Receita (Ganhos)"], horizontal=True, key="rad_tipo_avulso")
@@ -747,22 +755,21 @@ with tab_operacao:
         opcoes_atuais = OPCOES_RECEITA_FORM if eh_rec else OPCOES_DESPESA_FORM
 
         with col_cat:
-            cat_avulsa_sel = st.selectbox("Categoria:", opcoes_atuais, key="box_cat_avulsa")
+            cat_avulsa_sel = st.selectbox("Categoria:", opcoes_atuais, key=f"box_cat_avulsa_{'rec' if eh_rec else 'desp'}")
 
         cat_final_avulsa = cat_avulsa_sel
         if cat_avulsa_sel == "Outro":
             placeholder_espec = "Ex: Corrida particular avulsa, Gorjeta fora do app..." if eh_rec else "Ex: Estacionamento, Lanche..."
-            cat_espec = st.text_input("Especifique a categoria *", placeholder=placeholder_espec)
+            cat_espec = st.text_input("Especifique a categoria *", placeholder=placeholder_espec, key="input_outro_avulso")
             cat_final_avulsa = cat_espec.strip()
 
         col_val_a, col_obs_a = st.columns([1.2, 2])
         with col_val_a:
-            val_avulso_str = st.text_input("Valor (R$):", placeholder="Ex: 50,00 ou 15,50")
+            val_avulso_str = st.text_input("Valor (R$):", placeholder="Ex: 50,00 ou 15,50", key="input_val_avulso")
         with col_obs_a:
-            obs_avulsa = st.text_input("Observação (Opcional):", placeholder="Ex: Posto Shell, Lavagem completa...")
+            obs_avulsa = st.text_input("Observação (Opcional):", placeholder="Ex: Posto Shell, Lavagem completa...", key="input_obs_avulsa")
 
-        btn_salvar_parcial = st.form_submit_button("💾 Salvar Registro Parcial", type="primary", use_container_width=True)
-        if btn_salvar_parcial:
+        if st.button("💾 Salvar Registro Parcial", type="primary", use_container_width=True, key="btn_salvar_parcial_avulso"):
             v_calc = converter_valor(val_avulso_str)
             if v_calc <= 0:
                 st.error("Indique um valor superior a zero.")
@@ -772,6 +779,9 @@ with tab_operacao:
                 tipo_bd = "Receita" if eh_rec else "Despesa"
                 inserir_registro_avulso(data_atual, tipo_bd, cat_final_avulsa, obs_avulsa.strip(), v_calc, USUARIO_ID)
                 st.session_state["msg_sucesso"] = f"{tipo_bd} de {formata_real(v_calc)} salva com sucesso!"
+                st.session_state["input_val_avulso"] = ""
+                st.session_state["input_obs_avulsa"] = ""
+                st.session_state["input_outro_avulso"] = ""
                 st.rerun()
 
     # --- SEÇÃO 3: FECHAMENTO GERAL DO DIA ---
