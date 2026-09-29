@@ -247,18 +247,18 @@ def modal_alterar_senha(user_id):
                 else:
                     st.error(msg)
 
-# --- BARRA SUPERIOR COMPACTA ---
-c_titulo, c_senha, c_sair = st.columns([8.2, 0.9, 0.9])
+# --- BARRA SUPERIOR ---
+c_titulo, c_senha, c_sair = st.columns([5.0, 1.4, 1.0])
 with c_titulo:
     st.title("🚗 Saber Uber99")
-    st.caption(f"👤 Conectado: **{NOME_EXIBICAO}**")
+    st.caption(f"👤 Conectado como: **{NOME_EXIBICAO}**")
 with c_senha:
     st.markdown("<div style='height: 18px;'></div>", unsafe_allow_html=True)
-    if st.button("🔑", use_container_width=True, help="Alterar Senha"):
+    if st.button("🔑 Alterar Senha", use_container_width=True):
         modal_alterar_senha(USUARIO_ID)
 with c_sair:
     st.markdown("<div style='height: 18px;'></div>", unsafe_allow_html=True)
-    if st.button("🚪", use_container_width=True, help="Sair da Conta"):
+    if st.button("🚪 Sair", use_container_width=True):
         st.query_params.clear()
         st.session_state["usuario_logado"] = None
         st.rerun()
