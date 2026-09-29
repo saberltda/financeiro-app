@@ -8,7 +8,7 @@ import streamlit.components.v1 as components
 import secrets
 
 st.set_page_config(
-    page_title="Saber Uber99", 
+    page_title="Controle Motorista Pro", 
     page_icon="🚗", 
     layout="wide",
     initial_sidebar_state="collapsed"
@@ -58,42 +58,45 @@ def get_db_engine():
 
 engine = get_db_engine()
 
-# --- FUNÇÕES DE PERSISTÊNCIA VIA COOKIE REAL (1 ANO DE DURAÇÃO) ---
-def gravar_cookie_sessao(chave):
-    components.html(f"""
-    <script>
-        try {{
-            const d = new Date();
-            d.setTime(d.getTime() + (365 * 24 * 60 * 60 * 1000));
-            const expires = "expires=" + d.toUTCString();
-            window.parent.document.cookie = "cmp_token={chave};" + expires + ";path=/;SameSite=Lax";
-        }} catch(e) {{}}
-    </script>
-    """, height=0, width=0)
-
-def apagar_cookie_sessao():
-    components.html("""
-    <script>
-        try {
-            window.parent.document.cookie = "cmp_token=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/;";
-            const url = new URL(window.parent.location.href);
-            url.searchParams.delete('acesso');
-            window.parent.history.replaceState({}, '', url.pathname);
-        } catch(e) {}
-    </script>
-    """, height=0, width=0)
-
-# --- OPERAÇÕES DE AUTENTICAÇÃO NO BANCO ---
-def garantir_chave_acesso(user_id):
-    nova_chave = secrets.token_urlsafe(20)
+# --- CONSULTAS DE USUÁRIOS E AUTENTICAÇÃO ---
+def listar_contas_ativas():
     try:
-        with engine.begin() as conn:
-            conn.execute(text("""
-                UPDATE usuarios 
-                SET chave_acesso = :k 
-                WHERE id = :uid AND chave_acesso IS NULL;
-            """), {"k": nova_chave, "uid": user_id})
-        return nova_chave
+        with engine.connect() as conn:
+            query = text("""
+                SELECT id, COALESCE(nome, email) as nome_exibicao, email, ativo, chave_acesso
+                FROM usuarios
+                WHERE ativo = TRUE
+                ORDER BY nome_exibicao ASC;
+            """)
+            result = conn.execute(query).fetchall()
+            return [
+                {
+                    "id": r[0], 
+                    "nome": r[1], 
+                    "email": r[2], 
+                    "ativo": bool(r[3]),
+                    "chave_acesso": r[4]
+                } 
+                for r in result
+            ]
+    except Exception as e:
+        st.error(f"Erro ao carregar contas ativas: {str(e)}")
+        return []
+
+def buscar_usuario_por_id(user_id):
+    try:
+        with engine.connect() as conn:
+            query = text("SELECT id, email, nome, ativo, chave_acesso FROM usuarios WHERE id = :uid LIMIT 1;")
+            result = conn.execute(query, {"uid": int(user_id)}).fetchone()
+            if result:
+                return {
+                    "id": result[0],
+                    "email": result[1],
+                    "nome": result[2],
+                    "ativo": bool(result[3]),
+                    "chave_acesso": result[4]
+                }
+            return None
     except Exception:
         return None
 
@@ -135,16 +138,13 @@ def autenticar_usuario_senha(email_digitado, senha_digitada):
             }).fetchone()
             
             if result:
-                user_dict = {
+                return {
                     "id": result[0],
                     "email": result[1],
                     "nome": result[2],
                     "ativo": bool(result[3]),
                     "chave_acesso": result[4]
                 }
-                if not user_dict["chave_acesso"]:
-                    user_dict["chave_acesso"] = garantir_chave_acesso(user_dict["id"])
-                return user_dict
             return None
     except Exception:
         return None
@@ -153,71 +153,59 @@ def verificar_login():
     if "usuario_logado" not in st.session_state:
         st.session_state["usuario_logado"] = None
 
-    if "mostrar_form_login" not in st.session_state:
-        st.session_state["mostrar_form_login"] = False
+    if "mostrar_form_manual" not in st.session_state:
+        st.session_state["mostrar_form_manual"] = False
 
+    # 1. Se abriu pelo link pessoal (?acesso=CHAVE), entra direto
     chave_url = st.query_params.get("acesso")
-    
-    # Leitura nativa do cookie HTTP enviado pelo navegador
-    cookie_token = None
-    try:
-        cookie_token = st.context.cookies.get("cmp_token")
-    except Exception:
-        pass
+    if chave_url and st.session_state["usuario_logado"] is None:
+        user_chave = buscar_usuario_por_chave(chave_url)
+        if user_chave and user_chave["ativo"]:
+            st.session_state["usuario_logado"] = user_chave
+            return True
 
-    chave_identificada = chave_url or cookie_token
-
-    # 1. Se veio pelo link direto ou o cookie já existe
-    usuario_memorizado = None
-    if chave_identificada:
-        usuario_memorizado = buscar_usuario_por_chave(chave_identificada)
-        if not usuario_memorizado or not usuario_memorizado["ativo"]:
-            apagar_cookie_sessao()
-            usuario_memorizado = None
-
-    # Se já logou nesta sessão de memória
     if st.session_state["usuario_logado"] is not None:
         return True
 
-    # Se acessou diretamente pelo link ?acesso=..., conecta direto e salva o cookie
-    if chave_url and usuario_memorizado:
-        st.session_state["usuario_logado"] = usuario_memorizado
-        gravar_cookie_sessao(usuario_memorizado["chave_acesso"])
-        return True
-
-    # --- TELA DE ENTRADA INTELIGENTE ---
+    # 2. Tela de Acesso
     col_vazia1, col_centro, col_vazia2 = st.columns([1, 2.5, 1])
     with col_centro:
         st.markdown("<div style='height: 35px;'></div>", unsafe_allow_html=True)
 
-        # CENÁRIO 1: Aparelho com cookie salvo e válido (Reconhecido)
-        if usuario_memorizado and not st.session_state["mostrar_form_login"]:
+        if not st.session_state["mostrar_form_manual"]:
             st.markdown("<h2 style='text-align: center;'>🚗 Entrar em conta logada</h2>", unsafe_allow_html=True)
-            st.caption("<p style='text-align: center;'>Identificamos sua conta salva neste aparelho:</p>", unsafe_allow_html=True)
-            
-            nome_botao = usuario_memorizado["nome"] if usuario_memorizado["nome"] else usuario_memorizado["email"]
-            if st.button(f"👤 {nome_botao}", use_container_width=True, type="primary"):
-                st.session_state["usuario_logado"] = usuario_memorizado
-                gravar_cookie_sessao(usuario_memorizado["chave_acesso"])
-                st.rerun()
+            st.caption("<p style='text-align: center;'>Selecione sua conta para abrir o painel direto:</p>", unsafe_allow_html=True)
+
+            contas = listar_contas_ativas()
+
+            if contas:
+                for c in contas:
+                    nome_label = f"👤 {c['nome']}"
+                    if st.button(nome_label, key=f"btn_conta_{c['id']}", use_container_width=True, type="primary"):
+                        st.session_state["usuario_logado"] = buscar_usuario_por_id(c["id"])
+                        st.rerun()
+            else:
+                st.info("Nenhuma conta cadastrada ou ativa no momento.")
 
             st.markdown("<div style='height: 15px;'></div>", unsafe_allow_html=True)
             st.markdown("---")
+
             if st.button("🔑 Logar em outra conta", use_container_width=True):
-                st.session_state["mostrar_form_login"] = True
+                st.session_state["mostrar_form_manual"] = True
                 st.rerun()
 
-        # CENÁRIO 2: Janela Anônima / Aparelho novo / Troca de conta
         else:
-            st.markdown("<h2 style='text-align: center;'>🔒 Acesso ao Sistema</h2>", unsafe_allow_html=True)
-            st.caption("<p style='text-align: center;'>Introduza seu e-mail e senha para entrar:</p>", unsafe_allow_html=True)
+            st.markdown("<h2 style='text-align: center;'>🔒 Acesso com E-mail e Senha</h2>", unsafe_allow_html=True)
+            st.caption("<p style='text-align: center;'>Preencha suas credenciais completas:</p>", unsafe_allow_html=True)
 
-            with st.form("form_login_seguro"):
+            with st.form("form_login_outro"):
                 email_input = st.text_input("E-mail:", placeholder="seu_email@exemplo.com").strip().lower()
                 senha_input = st.text_input("Senha:", type="password", placeholder="••••••••")
-                lembrar_aparelho = st.checkbox("Manter logado neste dispositivo", value=True)
-                
-                btn_entrar = st.form_submit_button("🔓 Entrar", type="primary", use_container_width=True)
+                col_b1, col_b2 = st.columns(2)
+                with col_b1:
+                    btn_entrar = st.form_submit_button("🔓 Entrar", type="primary", use_container_width=True)
+                with col_b2:
+                    btn_voltar = st.form_submit_button("⬅️ Voltar", use_container_width=True)
 
                 if btn_entrar:
                     if not email_input or not senha_input:
@@ -229,16 +217,13 @@ def verificar_login():
                                 st.error("⛔ Sua assinatura está inativa.")
                             else:
                                 st.session_state["usuario_logado"] = dados
-                                if lembrar_aparelho and dados.get("chave_acesso"):
-                                    gravar_cookie_sessao(dados["chave_acesso"])
-                                st.session_state["mostrar_form_login"] = False
+                                st.session_state["mostrar_form_manual"] = False
                                 st.rerun()
                         else:
                             st.error("E-mail ou senha incorretos.")
 
-            if usuario_memorizado and st.session_state["mostrar_form_login"]:
-                if st.button("⬅️ Voltar para conta salva", use_container_width=True):
-                    st.session_state["mostrar_form_login"] = False
+                if btn_voltar:
+                    st.session_state["mostrar_form_manual"] = False
                     st.rerun()
 
     return False
@@ -251,10 +236,6 @@ usuario_atual = st.session_state["usuario_logado"]
 USUARIO_ID = usuario_atual["id"]
 NOME_EXIBICAO = usuario_atual["nome"] if usuario_atual["nome"] else usuario_atual["email"]
 
-# Garante o cookie ativo enquanto navega
-if usuario_atual.get("chave_acesso"):
-    gravar_cookie_sessao(usuario_atual["chave_acesso"])
-
 # --- BARRA SUPERIOR ---
 c_titulo, c_sair = st.columns([4.2, 1.8])
 with c_titulo:
@@ -263,10 +244,9 @@ with c_titulo:
 with c_sair:
     st.markdown("<div style='height: 18px;'></div>", unsafe_allow_html=True)
     if st.button("🚪 Trocar de Perfil", use_container_width=True):
-        apagar_cookie_sessao()
         st.query_params.clear()
         st.session_state["usuario_logado"] = None
-        st.session_state["mostrar_form_login"] = False
+        st.session_state["mostrar_form_manual"] = False
         st.rerun()
 
 # Nomenclaturas fixas
