@@ -438,6 +438,41 @@ def deletar_registro(id_reg, user_id):
         conn.execute(text('DELETE FROM lancamentos WHERE id = :id AND usuario_id = :uid'), {"id": id_reg, "uid": user_id})
     carregar_dados.clear()
 
+# --- PERSISTÊNCIA DO DIA FECHADO NO BANCO DE DADOS ---
+@st.cache_data(ttl=300)
+def verificar_dia_fechado_banco(data_reg, user_id):
+    try:
+        with engine.connect() as conn:
+            query = text("""
+                SELECT fechado 
+                FROM dias_fechados 
+                WHERE data = :data AND usuario_id = :uid 
+                LIMIT 1;
+            """)
+            res = conn.execute(query, {"data": data_reg, "uid": user_id}).fetchone()
+            return bool(res[0]) if res else False
+    except Exception:
+        return False
+
+def marcar_dia_fechado_banco(data_reg, user_id):
+    with engine.begin() as conn:
+        conn.execute(text("""
+            INSERT INTO dias_fechados (data, usuario_id, fechado)
+            VALUES (:data, :uid, TRUE)
+            ON CONFLICT (usuario_id, data) 
+            DO UPDATE SET fechado = TRUE;
+        """), {"data": data_reg, "uid": user_id})
+    verificar_dia_fechado_banco.clear()
+
+def reabrir_dia_fechado_banco(data_reg, user_id):
+    with engine.begin() as conn:
+        conn.execute(text("""
+            UPDATE dias_fechados 
+            SET fechado = FALSE 
+            WHERE data = :data AND usuario_id = :uid;
+        """), {"data": data_reg, "uid": user_id})
+    verificar_dia_fechado_banco.clear()
+
 # Gerador de Dossiê para IA
 def gerar_dossie_ia(df_periodo, df_km_periodo, d_ini, d_end):
     if df_periodo.empty and df_km_periodo.empty:
@@ -764,9 +799,10 @@ with tab_operacao:
     qtd_turnos = len(turnos_do_dia)
     qtd_turnos_fechados = int((~turnos_do_dia["km_final"].isnull()).sum()) if not turnos_do_dia.empty else 0
 
-    chave_dia_fechado = f"dia_fechado_{data_str_chave}"
-    dia_ja_fechado_memoria = st.session_state.get(chave_dia_fechado, False)
+    # Consulta ao Banco para saber se o dia está fechado
+    dia_fechado_banco = verificar_dia_fechado_banco(data_atual, USUARIO_ID)
     em_modo_edicao = st.session_state.get(f"modo_edicao_{data_str_chave}", False)
+    dia_esta_travado = dia_fechado_banco and not em_modo_edicao
 
     # --- RESUMO DO DIA (sempre no topo) ---
     st.markdown("---")
@@ -790,8 +826,8 @@ with tab_operacao:
         else:
             st.success(f"✔️ **Todos os turnos fechados** ({qtd_turnos_fechados} turno(s) · {formata_km(total_km_dia)})")
 
-        if dia_ja_fechado_memoria and not em_modo_edicao:
-            st.success(f"🔒 Dia **{data_atual.strftime('%d/%m/%Y')}** marcado como concluído.")
+        if dia_esta_travado:
+            st.success(f"🔒 Dia **{data_atual.strftime('%d/%m/%Y')}** gravado e concluído no banco de dados.")
 
     # --- SEÇÃO 1: TURNOS DE QUILOMETRAGEM ---
     st.markdown("---")
@@ -896,15 +932,15 @@ with tab_operacao:
                 if st.button("🗑️", key=f"btn_del_lista_{int(row['id'])}", use_container_width=True):
                     modal_excluir_registro(int(row["id"]), row["categoria"], formata_real(row["valor"]))
 
-    # --- SEÇÃO 3: CONCLUIR O DIA ---
+    # --- SEÇÃO 3: CONCLUIR O DIA (PERSISTÊNCIA COMPLETA NO SUPABASE) ---
     st.markdown("---")
     st.markdown("#### 🏁 3. Concluir o dia")
 
     pode_concluir = not tem_turno_aberto
 
-    if dia_ja_fechado_memoria and not em_modo_edicao:
+    if dia_esta_travado:
         with st.container(border=True):
-            st.success(f"🔒 **Dia {data_atual.strftime('%d/%m/%Y')} concluído!**")
+            st.success(f"🔒 **Dia {data_atual.strftime('%d/%m/%Y')} concluído e salvo!**")
             c_f1, c_f2, c_f3, c_f4 = st.columns(4)
             c_f1.metric("Faturamento", formata_real(tot_rec_dia))
             c_f2.metric("Despesas", formata_real(tot_desp_dia))
@@ -913,6 +949,7 @@ with tab_operacao:
             c_bedit, _ = st.columns([2.2, 2.8])
             with c_bedit:
                 if st.button("✏️ Corrigir o dia", use_container_width=True):
+                    reabrir_dia_fechado_banco(data_atual, USUARIO_ID)
                     st.session_state[f"modo_edicao_{data_str_chave}"] = True
                     st.rerun()
     else:
@@ -1012,7 +1049,7 @@ with tab_operacao:
                         else:
                             if novos_itens:
                                 salvar_fechamento_em_lote(data_atual, novos_itens, USUARIO_ID)
-                            st.session_state[chave_dia_fechado] = True
+                            marcar_dia_fechado_banco(data_atual, USUARIO_ID)
                             st.session_state[f"modo_edicao_{data_str_chave}"] = False
                             st.session_state["msg_sucesso"] = f"Dia {data_atual.strftime('%d/%m/%Y')} concluído com sucesso!"
                             st.rerun()
