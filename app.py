@@ -141,7 +141,7 @@ def autenticar_usuario_senha(email_digitado, senha_digitada):
                 return user_dict
             return None
     except Exception as e:
-        st.error(f"Erro ao verificar credenciais: {str(e)}")
+        st.error("Não foi possível entrar agora. Verifique sua conexão e tente novamente.")
         return None
 
 def atualizar_senha_usuario(user_id, senha_atual, nova_senha):
@@ -168,7 +168,7 @@ def atualizar_senha_usuario(user_id, senha_atual, nova_senha):
             conn.execute(up_query, {"uid": user_id, "nova_senha": nova_senha})
             return True, "Senha alterada com sucesso!"
     except Exception as e:
-        return False, f"Erro ao atualizar senha: {str(e)}"
+        return False, "Não foi possível atualizar a senha agora. Tente novamente em instantes."
 
 # --- VERIFICAÇÃO DE LOGIN STRICT (SEM EXPOSIÇÃO DE USUÁRIOS) ---
 def verificar_login():
@@ -593,8 +593,9 @@ def modal_editar_lancamento_dia(data_ref, lancamentos_dia_df):
                 st.rerun()
 
         if btn_excluir:
-            deletar_registro(item_id, USUARIO_ID)
-            st.session_state["msg_sucesso"] = f"Lançamento #{item_id} excluído!"
+            st.session_state["confirmar_excluir_id"] = item_id
+            st.session_state["confirmar_excluir_cat"] = item_ativo["categoria"]
+            st.session_state["confirmar_excluir_val"] = formata_real(item_ativo["valor"])
             st.rerun()
 
 # --- NOVO MODAL DEDICADO: LANÇAMENTOS DO DIA ---
@@ -661,9 +662,7 @@ def modal_tela_lancamentos(data_ref, df_lanc_hoje):
                     st.markdown(f"{badge} **{r['categoria']}**: **{formata_real(r['valor'])}**{obs_mostra}")
                 with col_del:
                     if st.button("🗑️", key=f"btn_del_mod_{r['id']}", use_container_width=True):
-                        deletar_registro(int(r["id"]), USUARIO_ID)
-                        st.session_state["msg_sucesso"] = f"Lançamento #{r['id']} excluído!"
-                        st.rerun()
+                        modal_excluir_registro(int(r["id"]), r["categoria"], formata_real(r["valor"]))
 
 # Modal Padrão de Edição (Aba Histórico)
 @st.dialog("✏️ Editar Lançamento")
@@ -691,6 +690,7 @@ def modal_editar_registro(item_id, item_data, item_tipo, item_cat, item_desc, it
 def modal_excluir_registro(item_id, item_cat, item_val_formatado):
     st.write(f"Deseja excluir o lançamento **#{item_id}**?")
     st.markdown(f"**{item_cat}** — **{item_val_formatado}**")
+    st.caption("Esta ação não pode ser desfeita.")
     col1, col2 = st.columns(2)
     with col1:
         if st.button("✔️ Sim, excluir", type="primary", use_container_width=True):
@@ -701,8 +701,32 @@ def modal_excluir_registro(item_id, item_cat, item_val_formatado):
         if st.button("✖️ Cancelar", use_container_width=True):
             st.rerun()
 
+@st.dialog("🗑️ Confirmar exclusão do turno")
+def modal_excluir_turno(turno_id, km_ini, km_fim):
+    st.write(f"Deseja excluir o **Turno #{turno_id}**?")
+    if km_fim is not None:
+        st.markdown(f"**{km_ini:,} km → {km_fim:,} km**".replace(",", "."))
+    else:
+        st.markdown(f"**Aberto em {km_ini:,} km** (ainda em curso)".replace(",", "."))
+    st.caption("Esta ação não pode ser desfeita.")
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("✔️ Sim, excluir turno", type="primary", use_container_width=True):
+            deletar_turno_banco(turno_id, USUARIO_ID)
+            st.session_state["msg_sucesso"] = f"Turno #{turno_id} removido."
+            st.rerun()
+    with col2:
+        if st.button("✖️ Cancelar", use_container_width=True):
+            st.rerun()
+
+if st.session_state.get("confirmar_excluir_id"):
+    _eid = st.session_state.pop("confirmar_excluir_id")
+    _ecat = st.session_state.pop("confirmar_excluir_cat", "")
+    _eval = st.session_state.pop("confirmar_excluir_val", "")
+    modal_excluir_registro(_eid, _ecat, _eval)
+
 # Abas Operacionais
-tab_operacao, tab_gerenciar = st.tabs(["⚡ Operação do Dia (Turnos & Parciais)", "⚙️ Histórico Financeiro"])
+tab_operacao, tab_gerenciar = st.tabs(["⚡ Operação do Dia", "⚙️ Histórico Financeiro"])
 
 # ==============================================================
 # ABA 1: OPERAÇÃO DO DIA
@@ -734,11 +758,46 @@ with tab_operacao:
     total_km_dia = int(round(turnos_do_dia["km_rodado"].dropna().sum())) if not turnos_do_dia.empty else 0
     lancamentos_hoje = df_completo[df_completo["data"].dt.date == data_atual] if not df_completo.empty else pd.DataFrame()
 
+    tot_rec_dia = float(lancamentos_hoje[lancamentos_hoje["tipo"] == "Receita"]["valor"].sum()) if not lancamentos_hoje.empty else 0.0
+    tot_desp_dia = float(lancamentos_hoje[lancamentos_hoje["tipo"] == "Despesa"]["valor"].sum()) if not lancamentos_hoje.empty else 0.0
+    lucro_dia = tot_rec_dia - tot_desp_dia
+    qtd_turnos = len(turnos_do_dia)
+    qtd_turnos_fechados = int((~turnos_do_dia["km_final"].isnull()).sum()) if not turnos_do_dia.empty else 0
+
+    chave_dia_fechado = f"dia_fechado_{data_str_chave}"
+    dia_ja_fechado_memoria = st.session_state.get(chave_dia_fechado, False)
+    em_modo_edicao = st.session_state.get(f"modo_edicao_{data_str_chave}", False)
+
+    # --- RESUMO DO DIA (sempre no topo) ---
+    st.markdown("---")
+    with st.container(border=True):
+        st.markdown(f"##### 📋 Resumo do dia — {data_atual.strftime('%d/%m/%Y')}")
+        r1, r2, r3, r4 = st.columns(4)
+        r1.metric("🟢 Receitas", formata_real(tot_rec_dia))
+        r2.metric("🔴 Despesas", formata_real(tot_desp_dia))
+        r3.metric("💰 Lucro", formata_real(lucro_dia))
+        r4.metric("🚗 KM", formata_km(total_km_dia))
+
+        if tem_turno_aberto:
+            t_ativo_resumo = turno_aberto.iloc[0]
+            km_ini_res = int(t_ativo_resumo["km_inicial"])
+            st.warning(
+                f"⏳ **Turno em aberto** — iniciado em **{km_ini_res:,} km**. "
+                f"Feche o turno antes de concluir o dia.".replace(",", ".")
+            )
+        elif qtd_turnos == 0:
+            st.info("Nenhum turno de KM registrado neste dia.")
+        else:
+            st.success(f"✔️ **Todos os turnos fechados** ({qtd_turnos_fechados} turno(s) · {formata_km(total_km_dia)})")
+
+        if dia_ja_fechado_memoria and not em_modo_edicao:
+            st.success(f"🔒 Dia **{data_atual.strftime('%d/%m/%Y')}** marcado como concluído.")
+
     # --- SEÇÃO 1: TURNOS DE QUILOMETRAGEM ---
     st.markdown("---")
-    st.markdown("#### 🚗 1. Turnos de Trabalho (Quilometragem)")
+    st.markdown("#### 🚗 1. Turnos de trabalho (quilometragem)")
     if not turnos_do_dia.empty:
-        st.markdown(f"**Turnos de trabalho no dia:** (Total acumulado: **{formata_km(total_km_dia)}**)")
+        st.markdown(f"**Turnos do dia** · Total: **{formata_km(total_km_dia)}**")
         idx_t = 1
         for _, t in turnos_do_dia.iterrows():
             t_id = int(t["id"])
@@ -756,28 +815,26 @@ with tab_operacao:
                     modal_editar_turno(t_id, k_ini, k_fim)
             with col_t_del:
                 if st.button("🗑️", key=f"btn_del_turno_{t_id}", use_container_width=True):
-                    deletar_turno_banco(t_id, USUARIO_ID)
-                    st.session_state["msg_sucesso"] = f"Turno #{t_id} removido."
-                    st.rerun()
+                    modal_excluir_turno(t_id, k_ini, k_fim)
             idx_t += 1
 
     if tem_turno_aberto:
         t_ativo = turno_aberto.iloc[0]
         id_aberto = int(t_ativo["id"])
         km_ini_ativo = int(t_ativo["km_inicial"])
-        st.warning(f"🔔 **Turno em Aberto:** Iniciado em **{km_ini_ativo:,} km**.".replace(",", "."))
+        st.warning(f"🔔 **Turno em aberto:** iniciado em **{km_ini_ativo:,} km**.".replace(",", "."))
         with st.form("form_fechar_turno"):
             c_kf, c_btnf = st.columns([2, 1])
             with c_kf:
                 input_km_fim = st.text_input("Odômetro ao encerrar este turno:", placeholder=f"Ex: {km_ini_ativo + 80}")
             with c_btnf:
                 st.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
-                btn_fechar_t = st.form_submit_button("🏁 Pausar / Fechar Turno", type="primary", use_container_width=True)
+                btn_fechar_t = st.form_submit_button("🏁 Pausar / Fechar turno", type="primary", use_container_width=True)
 
             if btn_fechar_t:
                 val_kf = converter_km_inteiro(input_km_fim)
                 if val_kf is None or val_kf <= 0:
-                    st.error("Indique um KM final válido.")
+                    st.error("Informe um quilometragem final válida (número inteiro).")
                 elif val_kf < km_ini_ativo:
                     st.error(f"O KM final não pode ser menor que o inicial ({km_ini_ativo:,} km).".replace(",", "."))
                 else:
@@ -794,169 +851,171 @@ with tab_operacao:
                 input_km_ini = st.text_input("Odômetro ao começar este turno:", value=str(ultimo_km) if ultimo_km else "", placeholder=placeholder_sug)
             with c_btni:
                 st.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
-                btn_abrir_t = st.form_submit_button("🟢 Iniciar Novo Turno", type="primary", use_container_width=True)
+                btn_abrir_t = st.form_submit_button("🟢 Iniciar novo turno", type="primary", use_container_width=True)
 
             if btn_abrir_t:
                 val_ki = converter_km_inteiro(input_km_ini)
                 if val_ki is None or val_ki <= 0:
-                    st.error("Indique um KM inicial inteiro e válido.")
+                    st.error("Informe um quilometragem inicial válida (número inteiro).")
                 else:
                     abrir_novo_turno(data_atual, val_ki, USUARIO_ID)
                     st.session_state["msg_sucesso"] = f"Turno iniciado em {val_ki:,} km!".replace(",", ".")
                     st.rerun()
 
-    # --- SEÇÃO 2: LANÇAMENTOS ---
+    # --- SEÇÃO 2: GANHOS E CUSTOS DO DIA (fluxo único) ---
     st.markdown("---")
-    st.markdown("#### ⚡ 2. Lançamentos")
-    st.caption("Registre receitas ou despesas parciais ou revise o extrato do dia:")
+    st.markdown("#### 💵 2. Ganhos e custos do dia")
+    st.caption("Registre tudo do dia aqui — parciais ou no fim do expediente. O resumo no topo atualiza na hora.")
 
     col_btn_lanc, col_info_lanc = st.columns([2.5, 2.5])
     with col_btn_lanc:
-        if st.button("📝 Novo Lançamento / Revisar Extrato", type="primary", use_container_width=True):
+        if st.button("📝 Adicionar / revisar lançamentos", type="primary", use_container_width=True):
             modal_tela_lancamentos(data_atual, lancamentos_hoje)
     with col_info_lanc:
         qtd_itens_hoje = len(lancamentos_hoje)
         if qtd_itens_hoje > 0:
-            st.info(f"✔️ {qtd_itens_hoje} lançamento(s) ativo(s) hoje.")
+            st.info(f"✔️ {qtd_itens_hoje} lançamento(s) neste dia.")
         else:
-            st.caption("Nenhum lançamento avulso registrado ainda.")
+            st.caption("Nenhum lançamento ainda neste dia.")
 
-    # --- SEÇÃO 3: FECHAMENTO GERAL DO DIA ---
-    st.markdown("---")
-    st.markdown("#### 🏁 3. Fechamento Geral do Dia")
-    col_km_soma1, col_km_soma2 = st.columns([2.5, 1])
-    with col_km_soma1:
-        st.markdown(f"**🚗 Quilometragem Total Trabalhada no Dia:**")
-        st.markdown(f"### `{formata_km(total_km_dia)}`")
-    with col_km_soma2:
-        if tem_turno_aberto:
-            st.error("⚠️ Há um turno aberto!")
-        else:
-            qtd_turnos = len(turnos_do_dia)
-            st.success(f"✔️ {qtd_turnos} turno(s) fechado(s)")
-
-    chave_dia_fechado = f"dia_fechado_{data_str_chave}"
-    dia_ja_fechado_memoria = st.session_state.get(chave_dia_fechado, False)
-
-    # CARD DE DIA FECHADO (Formatação blindada com st.metric para preservar o R$)
-    if dia_ja_fechado_memoria and not st.session_state.get(f"modo_edicao_{data_str_chave}", False):
-        tot_rec_fech = lancamentos_hoje[lancamentos_hoje["tipo"] == "Receita"]["valor"].sum() if not lancamentos_hoje.empty else 0.0
-        tot_desp_fech = lancamentos_hoje[lancamentos_hoje["tipo"] == "Despesa"]["valor"].sum() if not lancamentos_hoje.empty else 0.0
-        lucro_fech = tot_rec_fech - tot_desp_fech
-        
-        with st.container(border=True):
-            st.success(f"🔒 **Dia {data_atual.strftime('%d/%m/%Y')} Concluído e Fechado!**")
-            
-            c_f1, c_f2, c_f3, c_f4 = st.columns(4)
-            c_f1.metric("Faturamento", formata_real(tot_rec_fech))
-            c_f2.metric("Despesas", formata_real(tot_desp_fech))
-            c_f3.metric("Lucro Líquido", formata_real(lucro_fech))
-            c_f4.metric("KM Trabalhados", formata_km(total_km_dia))
-            
-            c_bedit, _ = st.columns([2.2, 2.8])
-            with c_bedit:
-                if st.button("✏️ Reabrir / Editar Fechamento", use_container_width=True):
-                    st.session_state[f"modo_edicao_{data_str_chave}"] = True
-                    st.rerun()
-
-    else:
-        categorias_lancadas_hoje = {}
-        if not lancamentos_hoje.empty:
-            for _, row in lancamentos_hoje.iterrows():
-                categorias_lancadas_hoje[row["categoria"]] = {
-                    "id": int(row["id"]),
-                    "tipo": row["tipo"],
-                    "valor": float(row["valor"]),
-                    "descricao": row["descricao"] if row["descricao"] else ""
-                }
-
-        with st.form("form_fechamento_geral_dia"):
-            st.markdown("##### 🟢 Ganhos (Receitas do Dia):")
-            campos_pendentes_rec = {}
-            for cat in OPCOES_RECEITA_FIXAS:
-                if cat in categorias_lancadas_hoje:
-                    dados_cat = categorias_lancadas_hoje[cat]
-                    st.text_input(
-                        f"✔️ {cat} (Já Registrado - Bloqueado):",
-                        value=f"{formata_real(dados_cat['valor'])} - {dados_cat['descricao']}" if dados_cat['descricao'] else formata_real(dados_cat['valor']),
-                        disabled=True,
-                        key=f"lock_rec_{cat}"
-                    )
-                else:
-                    campos_pendentes_rec[cat] = st.text_input(f"{cat} (R$):", placeholder="Deixe em branco se não realizou", key=f"pend_rec_{cat}")
-
-            col_or1, col_or2 = st.columns([1.2, 2])
-            with col_or1:
-                val_outra_rec = st.text_input("Outra Receita (R$):", placeholder="Deixe em branco se não realizou", key="fech_outra_rec_val")
-            with col_or2:
-                obs_outra_rec = st.text_input("Especifique a outra receita:", placeholder="Ex: Gorjeta fora do app, Entrega particular...", key="fech_outra_rec_obs")
-
-            st.markdown("---")
-            st.markdown("##### 🔴 Despesas do Dia:")
-            campos_pendentes_desp = {}
-            for cat in OPCOES_DESPESA_FIXAS:
-                if cat in categorias_lancadas_hoje:
-                    dados_cat = categorias_lancadas_hoje[cat]
-                    st.text_input(
-                        f"✔️ {cat} (Já Registrado - Bloqueado):",
-                        value=f"{formata_real(dados_cat['valor'])} - {dados_cat['descricao']}" if dados_cat['descricao'] else formata_real(dados_cat['valor']),
-                        disabled=True,
-                        key=f"lock_desp_{cat}"
-                    )
-                else:
-                    campos_pendentes_desp[cat] = st.text_input(f"{cat} (R$):", placeholder="Deixe em branco se não gastou", key=f"pend_desp_{cat}")
-
-            col_od1, col_od2 = st.columns([1.2, 2])
-            with col_od1:
-                val_outro_fechamento = st.text_input("Outro Custo (R$):", placeholder="Deixe em branco se não gastou", key="fech_outro_val")
-            with col_od2:
-                obs_outro_fechamento = st.text_input("Especifique o outro custo:", placeholder="Ex: Troca de lâmpada, café...", key="fech_outro_obs")
-
-            btn_concluir_dia = st.form_submit_button("🏁 Gravar Fechamento Final do Dia", type="primary", use_container_width=True)
-            if btn_concluir_dia:
-                # 1. BLOQUEIO OBRIGATÓRIO: Impede fechamento com turno aberto
-                if tem_turno_aberto:
-                    st.error("⚠️ Encerre ou pause todos os turnos de KM abertos antes de fechar o dia.")
-                else:
-                    novos_itens = []
-                    for cat, campo_val in campos_pendentes_rec.items():
-                        v = converter_valor(campo_val)
-                        if v > 0:
-                            novos_itens.append({"tipo": "Receita", "categoria": cat, "descricao": "", "valor": v})
-                    v_outra_rec_num = converter_valor(val_outra_rec)
-                    if v_outra_rec_num > 0:
-                        novos_itens.append({"tipo": "Receita", "categoria": "Outro", "descricao": obs_outra_rec.strip(), "valor": v_outra_rec_num})
-                    for cat, campo_val in campos_pendentes_desp.items():
-                        v = converter_valor(campo_val)
-                        if v > 0:
-                            novos_itens.append({"tipo": "Despesa", "categoria": cat, "descricao": "", "valor": v})
-                    v_outro_num = converter_valor(val_outro_fechamento)
-                    if v_outro_num > 0:
-                        novos_itens.append({"tipo": "Despesa", "categoria": "Outro", "descricao": obs_outro_fechamento.strip(), "valor": v_outro_num})
-
-                    if not novos_itens and not categorias_lancadas_hoje and total_km_dia == 0:
-                        st.warning("Preencha pelo menos uma categoria ou turno de KM para fechar o dia.")
-                    else:
-                        if novos_itens:
-                            salvar_fechamento_em_lote(data_atual, novos_itens, USUARIO_ID)
-                        st.session_state[chave_dia_fechado] = True
-                        st.session_state[f"modo_edicao_{data_str_chave}"] = False
-                        st.session_state["msg_sucesso"] = f"Fechamento do dia {data_atual.strftime('%d/%m/%Y')} concluído com sucesso!"
-                        st.rerun()
-
-    # Extrato exibido no rodapé
     if not lancamentos_hoje.empty:
         col_cab_hoje, col_btn_ed_hoje = st.columns([4, 1.5])
         with col_cab_hoje:
-            st.markdown(f"**Itens já lançados hoje ({len(lancamentos_hoje)}):**")
+            st.markdown(f"**Itens do dia ({len(lancamentos_hoje)}):**")
         with col_btn_ed_hoje:
-            if st.button("✏️ Editar Lançamento", key="btn_abrir_modal_dia", use_container_width=True):
+            if st.button("✏️ Editar item", key="btn_abrir_modal_dia", use_container_width=True):
                 modal_editar_lancamento_dia(data_atual, lancamentos_hoje)
 
         for _, row in lancamentos_hoje.iterrows():
             t_icon = "🟢" if row["tipo"] == "Receita" else "🔴"
             obs_txt = f" - *{row['descricao']}*" if row["descricao"] else ""
-            st.markdown(f"{t_icon} **{row['categoria']}**: **{formata_real(row['valor'])}**{obs_txt}")
+            col_item, col_item_del = st.columns([5.5, 1])
+            with col_item:
+                st.markdown(f"{t_icon} **{row['categoria']}**: **{formata_real(row['valor'])}**{obs_txt}")
+            with col_item_del:
+                if st.button("🗑️", key=f"btn_del_lista_{int(row['id'])}", use_container_width=True):
+                    modal_excluir_registro(int(row["id"]), row["categoria"], formata_real(row["valor"]))
+
+    # --- SEÇÃO 3: CONCLUIR O DIA ---
+    st.markdown("---")
+    st.markdown("#### 🏁 3. Concluir o dia")
+
+    pode_concluir = not tem_turno_aberto
+
+    if dia_ja_fechado_memoria and not em_modo_edicao:
+        with st.container(border=True):
+            st.success(f"🔒 **Dia {data_atual.strftime('%d/%m/%Y')} concluído!**")
+            c_f1, c_f2, c_f3, c_f4 = st.columns(4)
+            c_f1.metric("Faturamento", formata_real(tot_rec_dia))
+            c_f2.metric("Despesas", formata_real(tot_desp_dia))
+            c_f3.metric("Lucro líquido", formata_real(lucro_dia))
+            c_f4.metric("KM trabalhados", formata_km(total_km_dia))
+            c_bedit, _ = st.columns([2.2, 2.8])
+            with c_bedit:
+                if st.button("✏️ Corrigir o dia", use_container_width=True):
+                    st.session_state[f"modo_edicao_{data_str_chave}"] = True
+                    st.rerun()
+    else:
+        if not pode_concluir:
+            st.error("⚠️ Feche todos os turnos de KM antes de concluir o dia. O botão só fica disponível com turnos fechados.")
+            st.caption("Use a seção 1 para informar o odômetro final e pausar/fechar o turno em curso.")
+        else:
+            st.caption("Opcional: complete categorias que ainda faltam e confirme o dia. Categorias já lançadas aparecem bloqueadas.")
+
+            categorias_lancadas_hoje = {}
+            if not lancamentos_hoje.empty:
+                for _, row in lancamentos_hoje.iterrows():
+                    categorias_lancadas_hoje[row["categoria"]] = {
+                        "id": int(row["id"]),
+                        "tipo": row["tipo"],
+                        "valor": float(row["valor"]),
+                        "descricao": row["descricao"] if row["descricao"] else ""
+                    }
+
+            with st.form("form_fechamento_geral_dia"):
+                st.markdown("##### 🟢 Ganhos (receitas do dia):")
+                campos_pendentes_rec = {}
+                for cat in OPCOES_RECEITA_FIXAS:
+                    if cat in categorias_lancadas_hoje:
+                        dados_cat = categorias_lancadas_hoje[cat]
+                        st.text_input(
+                            f"✔️ {cat} (já registrado):",
+                            value=f"{formata_real(dados_cat['valor'])} - {dados_cat['descricao']}" if dados_cat['descricao'] else formata_real(dados_cat['valor']),
+                            disabled=True,
+                            key=f"lock_rec_{cat}"
+                        )
+                    else:
+                        campos_pendentes_rec[cat] = st.text_input(f"{cat} (R$):", placeholder="Deixe em branco se não realizou", key=f"pend_rec_{cat}")
+
+                col_or1, col_or2 = st.columns([1.2, 2])
+                with col_or1:
+                    val_outra_rec = st.text_input("Outra receita (R$):", placeholder="Deixe em branco se não realizou", key="fech_outra_rec_val")
+                with col_or2:
+                    obs_outra_rec = st.text_input("Especifique a outra receita:", placeholder="Ex: Gorjeta fora do app, Entrega particular...", key="fech_outra_rec_obs")
+
+                st.markdown("---")
+                st.markdown("##### 🔴 Despesas do dia:")
+                campos_pendentes_desp = {}
+                for cat in OPCOES_DESPESA_FIXAS:
+                    if cat in categorias_lancadas_hoje:
+                        dados_cat = categorias_lancadas_hoje[cat]
+                        st.text_input(
+                            f"✔️ {cat} (já registrado):",
+                            value=f"{formata_real(dados_cat['valor'])} - {dados_cat['descricao']}" if dados_cat['descricao'] else formata_real(dados_cat['valor']),
+                            disabled=True,
+                            key=f"lock_desp_{cat}"
+                        )
+                    else:
+                        campos_pendentes_desp[cat] = st.text_input(f"{cat} (R$):", placeholder="Deixe em branco se não gastou", key=f"pend_desp_{cat}")
+
+                col_od1, col_od2 = st.columns([1.2, 2])
+                with col_od1:
+                    val_outro_fechamento = st.text_input("Outro custo (R$):", placeholder="Deixe em branco se não gastou", key="fech_outro_val")
+                with col_od2:
+                    obs_outro_fechamento = st.text_input("Especifique o outro custo:", placeholder="Ex: Troca de lâmpada, café...", key="fech_outro_obs")
+
+                btn_concluir_dia = st.form_submit_button("✅ Concluir o dia", type="primary", use_container_width=True)
+                if btn_concluir_dia:
+                    if tem_turno_aberto:
+                        st.error("Feche todos os turnos de KM antes de concluir o dia.")
+                    else:
+                        novos_itens = []
+                        for cat, campo_val in campos_pendentes_rec.items():
+                            v = converter_valor(campo_val)
+                            if v < 0:
+                                st.error(f"Valor inválido em «{cat}». Use números como 45,50.")
+                                st.stop()
+                            if v > 0:
+                                novos_itens.append({"tipo": "Receita", "categoria": cat, "descricao": "", "valor": v})
+                        v_outra_rec_num = converter_valor(val_outra_rec)
+                        if v_outra_rec_num < 0:
+                            st.error("Valor inválido em «Outra receita». Use números como 45,50.")
+                            st.stop()
+                        if v_outra_rec_num > 0:
+                            novos_itens.append({"tipo": "Receita", "categoria": "Outro", "descricao": obs_outra_rec.strip(), "valor": v_outra_rec_num})
+                        for cat, campo_val in campos_pendentes_desp.items():
+                            v = converter_valor(campo_val)
+                            if v < 0:
+                                st.error(f"Valor inválido em «{cat}». Use números como 45,50.")
+                                st.stop()
+                            if v > 0:
+                                novos_itens.append({"tipo": "Despesa", "categoria": cat, "descricao": "", "valor": v})
+                        v_outro_num = converter_valor(val_outro_fechamento)
+                        if v_outro_num < 0:
+                            st.error("Valor inválido em «Outro custo». Use números como 45,50.")
+                            st.stop()
+                        if v_outro_num > 0:
+                            novos_itens.append({"tipo": "Despesa", "categoria": "Outro", "descricao": obs_outro_fechamento.strip(), "valor": v_outro_num})
+
+                        if not novos_itens and not categorias_lancadas_hoje and total_km_dia == 0:
+                            st.warning("Registre pelo menos um lançamento ou um turno de KM antes de concluir o dia.")
+                        else:
+                            if novos_itens:
+                                salvar_fechamento_em_lote(data_atual, novos_itens, USUARIO_ID)
+                            st.session_state[chave_dia_fechado] = True
+                            st.session_state[f"modo_edicao_{data_str_chave}"] = False
+                            st.session_state["msg_sucesso"] = f"Dia {data_atual.strftime('%d/%m/%Y')} concluído com sucesso!"
+                            st.rerun()
 
 # ==============================================================
 # ABA 2: GERENCIAR REGISTROS
