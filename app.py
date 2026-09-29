@@ -276,7 +276,7 @@ if usuario_atual.get("primeiro_acesso", False):
 @st.dialog("🔗 Seu Link de Acesso Direto")
 def modal_link_direto(chave):
     st.write("Guarde este link nos favoritos ou adicione à tela de início do seu celular. Com ele, você entra direto sem digitar senha:")
-    link_direto = f"https://seu-app.streamlit.app/?acesso={chave}"
+    link_direto = f"https://financeiro-saber.streamlit.app/?acesso={chave}"
     st.code(link_direto, language="text")
     st.caption("📲 **No iPhone ou Android:** Abra este link e clique em 'Adicionar à tela de início' para criar um ícone que abre seu app direto!")
 
