@@ -733,20 +733,22 @@ with tab_operacao:
                     st.session_state["msg_sucesso"] = f"Turno iniciado em {val_ki:,} km!".replace(",", ".")
                     st.rerun()
 
-    # --- SEÇÃO 2: LANÇAMENTO RÁPIDO NO DIA ---
+    # --- SEÇÃO 2: LANÇAMENTO RÁPIDO NO DIA (CAMPOS TOTALMENTE INTEGRADOS) ---
     st.markdown("---")
     st.markdown("#### ⚡ 2. Lançamento Rápido no Dia")
-    col_sel_tipo, col_sel_cat = st.columns(2)
-    with col_sel_tipo:
-        tipo_avulso = st.radio("Tipo:", ["Despesa (Custos)", "Receita (Ganhos)"], horizontal=True, key="rad_tipo_avulso")
-    
-    eh_rec = tipo_avulso == "Receita (Ganhos)"
-    opcoes_atuais = OPCOES_RECEITA_FORM if eh_rec else OPCOES_DESPESA_FORM
-
-    with col_sel_cat:
-        cat_avulsa_sel = st.selectbox("Categoria:", opcoes_atuais, key="box_cat_avulsa")
+    st.caption("Lance despesas ou receitas avulsas em um único formulário:")
 
     with st.form("form_lancamento_parcial", clear_on_submit=True):
+        col_tipo, col_cat = st.columns(2)
+        with col_tipo:
+            tipo_avulso = st.radio("Tipo:", ["Despesa (Custos)", "Receita (Ganhos)"], horizontal=True, key="rad_tipo_avulso")
+        
+        eh_rec = tipo_avulso == "Receita (Ganhos)"
+        opcoes_atuais = OPCOES_RECEITA_FORM if eh_rec else OPCOES_DESPESA_FORM
+
+        with col_cat:
+            cat_avulsa_sel = st.selectbox("Categoria:", opcoes_atuais, key="box_cat_avulsa")
+
         cat_final_avulsa = cat_avulsa_sel
         if cat_avulsa_sel == "Outro":
             placeholder_espec = "Ex: Corrida particular avulsa, Gorjeta..." if eh_rec else "Ex: Estacionamento, Lanche, Troca de óleo..."
