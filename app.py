@@ -59,7 +59,7 @@ def get_db_engine():
 
 engine = get_db_engine()
 
-# --- BUSCA DE MOTORISTAS ATIVOS PARA ENTRADA COM 1 TOQUE ---
+# --- CONSULTAS DE USUÁRIOS E AUTENTICAÇÃO ---
 def listar_motoristas_ativos():
     try:
         with engine.connect() as conn:
@@ -72,7 +72,7 @@ def listar_motoristas_ativos():
             result = conn.execute(query).fetchall()
             return [{"id": r[0], "nome": r[1], "email": r[2], "ativo": bool(r[3])} for r in result]
     except Exception as e:
-        st.error(f"Erro ao carregar lista de motoristas: {str(e)}")
+        st.error(f"Erro ao carregar lista de contas: {str(e)}")
         return []
 
 def buscar_usuario_por_id(user_id):
@@ -109,11 +109,44 @@ def buscar_usuario_por_chave(chave_acesso):
     except Exception:
         return None
 
+def autenticar_usuario_senha(email_digitado, senha_digitada):
+    try:
+        with engine.connect() as conn:
+            query = text("""
+                SELECT id, email, nome, ativo
+                FROM usuarios 
+                WHERE LOWER(email) = LOWER(:email) 
+                  AND (
+                      senha_hash = crypt(:senha, senha_hash)
+                      OR senha_hash = :senha
+                  )
+                LIMIT 1;
+            """)
+            result = conn.execute(query, {
+                "email": email_digitado.strip(),
+                "senha": senha_digitada
+            }).fetchone()
+            
+            if result:
+                return {
+                    "id": result[0],
+                    "email": result[1],
+                    "nome": result[2],
+                    "ativo": bool(result[3])
+                }
+            return None
+    except Exception as e:
+        st.error(f"Erro ao verificar credenciais: {str(e)}")
+        return None
+
 def verificar_login():
     if "usuario_logado" not in st.session_state:
         st.session_state["usuario_logado"] = None
 
-    # Se vier com link direto (?acesso=CHAVE), conecta imediatamente
+    if "mostrar_form_outro_login" not in st.session_state:
+        st.session_state["mostrar_form_outro_login"] = False
+
+    # Acesso direto via parâmetro de URL
     chave_url = st.query_params.get("acesso")
     if chave_url and st.session_state["usuario_logado"] is None:
         user_chave = buscar_usuario_por_chave(chave_url)
@@ -124,22 +157,60 @@ def verificar_login():
     if st.session_state["usuario_logado"] is not None:
         return True
 
-    # --- TELA DE SELEÇÃO RÁPIDA COM 1 TOQUE ---
+    # --- TELA DE ENTRADA ---
     col_vazia1, col_centro, col_vazia2 = st.columns([1, 2.5, 1])
     with col_centro:
         st.markdown("<div style='height: 35px;'></div>", unsafe_allow_html=True)
-        st.markdown("<h2 style='text-align: center;'>🚗 Quem está dirigindo hoje?</h2>", unsafe_allow_html=True)
-        st.caption("<p style='text-align: center;'>Selecione o seu perfil para abrir o painel direto:</p>", unsafe_allow_html=True)
+        st.markdown("<h2 style='text-align: center;'>🚗 Entrar em conta logada</h2>", unsafe_allow_html=True)
+        st.caption("<p style='text-align: center;'>Selecione o seu perfil para abrir o painel:</p>", unsafe_allow_html=True)
 
         motoristas = listar_motoristas_ativos()
 
         if not motoristas:
-            st.info("Nenhum motorista ativo encontrado no banco de dados.")
+            st.info("Nenhuma conta ativa encontrada.")
         else:
             for mot in motoristas:
                 label_btn = f"👤 {mot['nome']}"
                 if st.button(label_btn, key=f"btn_user_{mot['id']}", use_container_width=True, type="primary"):
                     st.session_state["usuario_logado"] = buscar_usuario_por_id(mot["id"])
+                    st.rerun()
+
+        st.markdown("<div style='height: 15px;'></div>", unsafe_allow_html=True)
+        st.markdown("---")
+
+        # Opção para logar com outra conta via e-mail e senha
+        if not st.session_state["mostrar_form_outro_login"]:
+            if st.button("🔑 Logar em outra conta", use_container_width=True):
+                st.session_state["mostrar_form_outro_login"] = True
+                st.rerun()
+        else:
+            st.markdown("#### 🔒 Acesso com E-mail e Senha")
+            with st.form("form_login_manual"):
+                email_input = st.text_input("E-mail:", placeholder="seu_email@exemplo.com").strip().lower()
+                senha_input = st.text_input("Senha:", type="password", placeholder="••••••••")
+                col_b1, col_b2 = st.columns(2)
+                with col_b1:
+                    btn_entrar = st.form_submit_button("🔓 Entrar", type="primary", use_container_width=True)
+                with col_b2:
+                    btn_voltar = st.form_submit_button("Voltar", use_container_width=True)
+
+                if btn_entrar:
+                    if not email_input or not senha_input:
+                        st.error("Preencha o e-mail e a senha.")
+                    else:
+                        dados = autenticar_usuario_senha(email_input, senha_input)
+                        if dados:
+                            if not dados["ativo"]:
+                                st.error("⛔ Sua assinatura está inativa.")
+                            else:
+                                st.session_state["usuario_logado"] = dados
+                                st.session_state["mostrar_form_outro_login"] = False
+                                st.rerun()
+                        else:
+                            st.error("E-mail ou senha incorretos.")
+
+                if btn_voltar:
+                    st.session_state["mostrar_form_outro_login"] = False
                     st.rerun()
 
     return False
@@ -162,6 +233,7 @@ with c_sair:
     if st.button("🚪 Trocar de Perfil", use_container_width=True):
         st.query_params.clear()
         st.session_state["usuario_logado"] = None
+        st.session_state["mostrar_form_outro_login"] = False
         st.rerun()
 
 # Nomenclaturas fixas
