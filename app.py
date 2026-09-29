@@ -58,44 +58,27 @@ def get_db_engine():
 
 engine = get_db_engine()
 
-# --- ISOLAMENTO SEGURO DE CONTA NO DISPOSITIVO (LOCALSTORAGE DO APARELHO) ---
-def salvar_conta_dispositivo(chave, nome):
+# --- FUNÇÕES DE PERSISTÊNCIA VIA COOKIE REAL (1 ANO DE DURAÇÃO) ---
+def gravar_cookie_sessao(chave):
     components.html(f"""
     <script>
         try {{
-            window.parent.localStorage.setItem('cmp_disp_chave', '{chave}');
-            window.parent.localStorage.setItem('cmp_disp_nome', '{nome}');
+            const d = new Date();
+            d.setTime(d.getTime() + (365 * 24 * 60 * 60 * 1000));
+            const expires = "expires=" + d.toUTCString();
+            window.parent.document.cookie = "cmp_token={chave};" + expires + ";path=/;SameSite=Lax";
         }} catch(e) {{}}
     </script>
     """, height=0, width=0)
 
-def limpar_conta_dispositivo():
+def apagar_cookie_sessao():
     components.html("""
     <script>
         try {
-            window.parent.localStorage.removeItem('cmp_disp_chave');
-            window.parent.localStorage.removeItem('cmp_disp_nome');
+            window.parent.document.cookie = "cmp_token=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/;";
             const url = new URL(window.parent.location.href);
             url.searchParams.delete('acesso');
-            url.searchParams.delete('saved_k');
-            url.searchParams.delete('saved_n');
             window.parent.history.replaceState({}, '', url.pathname);
-        } catch(e) {}
-    </script>
-    """, height=0, width=0)
-
-def resgatar_conta_dispositivo_js():
-    components.html("""
-    <script>
-        try {
-            const k = window.parent.localStorage.getItem('cmp_disp_chave');
-            const n = window.parent.localStorage.getItem('cmp_disp_nome');
-            const url = new URL(window.parent.location.href);
-            if (k && !url.searchParams.has('saved_k') && !url.searchParams.has('acesso')) {
-                url.searchParams.set('saved_k', k);
-                url.searchParams.set('saved_n', n || '');
-                window.parent.location.replace(url.href);
-            }
         } catch(e) {}
     </script>
     """, height=0, width=0)
@@ -174,47 +157,49 @@ def verificar_login():
         st.session_state["mostrar_form_login"] = False
 
     chave_url = st.query_params.get("acesso")
-    saved_k = st.query_params.get("saved_k")
-    saved_n = st.query_params.get("saved_n", "")
+    
+    # Leitura nativa do cookie HTTP enviado pelo navegador
+    cookie_token = None
+    try:
+        cookie_token = st.context.cookies.get("cmp_token")
+    except Exception:
+        pass
 
-    # Se abriu link direto (?acesso=CHAVE), autentica e já memoriza neste aparelho
-    if chave_url and st.session_state["usuario_logado"] is None:
-        user_chave = buscar_usuario_por_chave(chave_url)
-        if user_chave and user_chave["ativo"]:
-            st.session_state["usuario_logado"] = user_chave
-            salvar_conta_dispositivo(user_chave["chave_acesso"], user_chave["nome"] or user_chave["email"])
-            return True
-        else:
-            limpar_conta_dispositivo()
-            st.query_params.clear()
+    chave_identificada = chave_url or cookie_token
 
+    # 1. Se veio pelo link direto ou o cookie já existe
+    usuario_memorizado = None
+    if chave_identificada:
+        usuario_memorizado = buscar_usuario_por_chave(chave_identificada)
+        if not usuario_memorizado or not usuario_memorizado["ativo"]:
+            apagar_cookie_sessao()
+            usuario_memorizado = None
+
+    # Se já logou nesta sessão de memória
     if st.session_state["usuario_logado"] is not None:
         return True
 
-    # Se abriu sem nada na URL, roda o script para verificar se este navegador possui conta memorizada
-    if not chave_url and not saved_k:
-        resgatar_conta_dispositivo_js()
+    # Se acessou diretamente pelo link ?acesso=..., conecta direto e salva o cookie
+    if chave_url and usuario_memorizado:
+        st.session_state["usuario_logado"] = usuario_memorizado
+        gravar_cookie_sessao(usuario_memorizado["chave_acesso"])
+        return True
 
     # --- TELA DE ENTRADA INTELIGENTE ---
     col_vazia1, col_centro, col_vazia2 = st.columns([1, 2.5, 1])
     with col_centro:
         st.markdown("<div style='height: 35px;'></div>", unsafe_allow_html=True)
 
-        # CENÁRIO 1: O aparelho tem uma conta memorizada (Atalho do Chrome / Navegador do dono)
-        if saved_k and not st.session_state["mostrar_form_login"]:
+        # CENÁRIO 1: Aparelho com cookie salvo e válido (Reconhecido)
+        if usuario_memorizado and not st.session_state["mostrar_form_login"]:
             st.markdown("<h2 style='text-align: center;'>🚗 Entrar em conta logada</h2>", unsafe_allow_html=True)
-            st.caption("<p style='text-align: center;'>Identificamos sua conta memorizada neste dispositivo:</p>", unsafe_allow_html=True)
+            st.caption("<p style='text-align: center;'>Identificamos sua conta salva neste aparelho:</p>", unsafe_allow_html=True)
             
-            nome_botao = saved_n if saved_n else "Meu Perfil"
+            nome_botao = usuario_memorizado["nome"] if usuario_memorizado["nome"] else usuario_memorizado["email"]
             if st.button(f"👤 {nome_botao}", use_container_width=True, type="primary"):
-                user_recuperado = buscar_usuario_por_chave(saved_k)
-                if user_recuperado and user_recuperado["ativo"]:
-                    st.session_state["usuario_logado"] = user_recuperado
-                    st.rerun()
-                else:
-                    limpar_conta_dispositivo()
-                    st.error("Sua sessão expirou ou foi desativada. Faça login novamente.")
-                    st.rerun()
+                st.session_state["usuario_logado"] = usuario_memorizado
+                gravar_cookie_sessao(usuario_memorizado["chave_acesso"])
+                st.rerun()
 
             st.markdown("<div style='height: 15px;'></div>", unsafe_allow_html=True)
             st.markdown("---")
@@ -222,7 +207,7 @@ def verificar_login():
                 st.session_state["mostrar_form_login"] = True
                 st.rerun()
 
-        # CENÁRIO 2: Janela Anônima / Aparelho novo (Sem dados vazados)
+        # CENÁRIO 2: Janela Anônima / Aparelho novo / Troca de conta
         else:
             st.markdown("<h2 style='text-align: center;'>🔒 Acesso ao Sistema</h2>", unsafe_allow_html=True)
             st.caption("<p style='text-align: center;'>Introduza seu e-mail e senha para entrar:</p>", unsafe_allow_html=True)
@@ -232,17 +217,7 @@ def verificar_login():
                 senha_input = st.text_input("Senha:", type="password", placeholder="••••••••")
                 lembrar_aparelho = st.checkbox("Manter logado neste dispositivo", value=True)
                 
-                col_btn1, col_btn2 = st.columns(2) if saved_k else (st.columns(1)[0], None)
-                
-                with col_btn1:
-                    btn_entrar = st.form_submit_button("🔓 Entrar", type="primary", use_container_width=True)
-                
-                if col_btn2:
-                    with col_btn2:
-                        btn_voltar = st.form_submit_button("Voltar", use_container_width=True)
-                        if btn_voltar:
-                            st.session_state["mostrar_form_login"] = False
-                            st.rerun()
+                btn_entrar = st.form_submit_button("🔓 Entrar", type="primary", use_container_width=True)
 
                 if btn_entrar:
                     if not email_input or not senha_input:
@@ -255,11 +230,16 @@ def verificar_login():
                             else:
                                 st.session_state["usuario_logado"] = dados
                                 if lembrar_aparelho and dados.get("chave_acesso"):
-                                    salvar_conta_dispositivo(dados["chave_acesso"], dados["nome"] or dados["email"])
+                                    gravar_cookie_sessao(dados["chave_acesso"])
                                 st.session_state["mostrar_form_login"] = False
                                 st.rerun()
                         else:
                             st.error("E-mail ou senha incorretos.")
+
+            if usuario_memorizado and st.session_state["mostrar_form_login"]:
+                if st.button("⬅️ Voltar para conta salva", use_container_width=True):
+                    st.session_state["mostrar_form_login"] = False
+                    st.rerun()
 
     return False
 
@@ -271,6 +251,10 @@ usuario_atual = st.session_state["usuario_logado"]
 USUARIO_ID = usuario_atual["id"]
 NOME_EXIBICAO = usuario_atual["nome"] if usuario_atual["nome"] else usuario_atual["email"]
 
+# Garante o cookie ativo enquanto navega
+if usuario_atual.get("chave_acesso"):
+    gravar_cookie_sessao(usuario_atual["chave_acesso"])
+
 # --- BARRA SUPERIOR ---
 c_titulo, c_sair = st.columns([4.2, 1.8])
 with c_titulo:
@@ -279,7 +263,7 @@ with c_titulo:
 with c_sair:
     st.markdown("<div style='height: 18px;'></div>", unsafe_allow_html=True)
     if st.button("🚪 Trocar de Perfil", use_container_width=True):
-        limpar_conta_dispositivo()
+        apagar_cookie_sessao()
         st.query_params.clear()
         st.session_state["usuario_logado"] = None
         st.session_state["mostrar_form_login"] = False
