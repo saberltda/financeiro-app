@@ -44,7 +44,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# Conexão blindada com o Supabase
+# Conexão com o Supabase
 raw_url = st.secrets["database"]["url"]
 if raw_url.startswith("postgresql://"):
     raw_url = raw_url.replace("postgresql://", "postgresql+psycopg://", 1)
@@ -59,6 +59,44 @@ def get_db_engine():
     return create_engine(raw_url, pool_pre_ping=True, pool_recycle=300)
 
 engine = get_db_engine()
+
+# --- SINCRONIZADOR DE SESSÃO LOCAL (RESOLVE O INSTALAR ATALHO DO CHROME) ---
+def sincronizar_armazenamento_local(chave=""):
+    if chave:
+        # Quando logado com chave, salva no dispositivo
+        components.html(f"""
+        <script>
+            try {{
+                window.parent.localStorage.setItem('cmp_chave_acesso', '{chave}');
+            }} catch(e) {{}}
+        </script>
+        """, height=0, width=0)
+    else:
+        # Quando abre limpo pelo atalho instalado, recupera e recarrega com o parâmetro
+        components.html("""
+        <script>
+            try {
+                const salvo = window.parent.localStorage.getItem('cmp_chave_acesso');
+                const url = new URL(window.parent.location.href);
+                if (salvo && !url.searchParams.has('acesso')) {
+                    url.searchParams.set('acesso', salvo);
+                    window.parent.location.replace(url.href);
+                }
+            } catch(e) {}
+        </script>
+        """, height=0, width=0)
+
+def limpar_armazenamento_local():
+    components.html("""
+    <script>
+        try {
+            window.parent.localStorage.removeItem('cmp_chave_acesso');
+            const url = new URL(window.parent.location.href);
+            url.searchParams.delete('acesso');
+            window.parent.history.replaceState({}, '', url.pathname);
+        } catch(e) {}
+    </script>
+    """, height=0, width=0)
 
 # --- SISTEMA DE AUTENTICAÇÃO COM LINK ÚNICO E SENHA ---
 def garantir_chave_acesso(user_id):
@@ -179,25 +217,32 @@ def verificar_login():
     if "usuario_logado" not in st.session_state:
         st.session_state["usuario_logado"] = None
 
-    # 1. VERIFICAÇÃO AUTOMÁTICA VIA LINK ÚNICO (?acesso=chave)
     chave_url = st.query_params.get("acesso")
+
+    # 1. VERIFICAÇÃO AUTOMÁTICA VIA PARÂMETRO
     if chave_url and st.session_state["usuario_logado"] is None:
         user_chave = buscar_usuario_por_chave(chave_url)
         if user_chave:
             if user_chave["ativo"]:
                 st.session_state["usuario_logado"] = user_chave
+                sincronizar_armazenamento_local(chave_url)
                 return True
             else:
+                limpar_armazenamento_local()
                 st.error("⛔ Sua assinatura está inativa. Regularize na plataforma de compra.")
                 st.stop()
         else:
-            st.warning("⚠️ Link de acesso inválido ou expirado. Faça login manualmente.")
+            limpar_armazenamento_local()
             st.query_params.clear()
+
+    # 2. SE NÃO HOUVER PARÂMETRO NA URL, VERIFICA SE EXISTE NO STORAGE DO APARELHO
+    if not chave_url and st.session_state["usuario_logado"] is None:
+        sincronizar_armazenamento_local()
 
     if st.session_state["usuario_logado"] is not None:
         return True
 
-    # 2. TELA DE LOGIN CONVENCIONAL
+    # 3. TELA DE LOGIN CONVENCIONAL
     col_vazia1, col_centro, col_vazia2 = st.columns([1, 2.5, 1])
     with col_centro:
         st.markdown("<div style='height: 40px;'></div>", unsafe_allow_html=True)
@@ -219,9 +264,10 @@ def verificar_login():
                             st.error("⛔ A sua assinatura está inativa. Regularize o acesso para continuar.")
                         else:
                             st.session_state["usuario_logado"] = dados_user
-                            # Anexa a chave única na URL para salvar nos favoritos/tela inicial
-                            if dados_user.get("chave_acesso"):
-                                st.query_params["acesso"] = dados_user["chave_acesso"]
+                            chave = dados_user.get("chave_acesso")
+                            if chave:
+                                st.query_params["acesso"] = chave
+                                sincronizar_armazenamento_local(chave)
                             st.rerun()
                     else:
                         st.error("E-mail ou senha incorretos. Verifique suas credenciais.")
@@ -237,9 +283,11 @@ USUARIO_ID = usuario_atual["id"]
 NOME_EXIBICAO = usuario_atual["nome"] if usuario_atual["nome"] else usuario_atual["email"]
 CHAVE_ACESSO = usuario_atual.get("chave_acesso", "")
 
-# Garante que o parâmetro de acesso continue na URL durante a navegação
-if CHAVE_ACESSO and st.query_params.get("acesso") != CHAVE_ACESSO:
-    st.query_params["acesso"] = CHAVE_ACESSO
+# Mantém sincronizado no aparelho e na URL
+if CHAVE_ACESSO:
+    if st.query_params.get("acesso") != CHAVE_ACESSO:
+        st.query_params["acesso"] = CHAVE_ACESSO
+    sincronizar_armazenamento_local(CHAVE_ACESSO)
 
 # --- BLOQUEIO E TELA OBRIGATÓRIA DE PRIMEIRO ACESSO ---
 if usuario_atual.get("primeiro_acesso", False):
@@ -275,10 +323,10 @@ if usuario_atual.get("primeiro_acesso", False):
 # Modal para Exibir Link Único do Motorista
 @st.dialog("🔗 Seu Link de Acesso Direto")
 def modal_link_direto(chave):
-    st.write("Guarde este link nos favoritos ou adicione à tela de início do seu celular. Com ele, você entra direto sem digitar senha:")
-    link_direto = f"https://financeiro-saber.streamlit.app/?acesso={chave}"
+    st.write("Guarde este link nos favoritos ou envie para o seu WhatsApp. Ele identifica você automaticamente:")
+    link_direto = f"https://financeiro-app.streamlit.app/?acesso={chave}"
     st.code(link_direto, language="text")
-    st.caption("📲 **No iPhone ou Android:** Abra este link e clique em 'Adicionar à tela de início' para criar um ícone que abre seu app direto!")
+    st.caption("📲 Ao abrir esse link no Chrome ou Safari, seu aparelho memoriza o login e você pode usar o atalho direto.")
 
 # Modal para Alteração de Senha
 @st.dialog("🔑 Alterar Palavra-passe")
@@ -322,6 +370,7 @@ with c_senha:
 with c_sair:
     st.markdown("<div style='height: 18px;'></div>", unsafe_allow_html=True)
     if st.button("🚪 Sair", use_container_width=True):
+        limpar_armazenamento_local()
         st.query_params.clear()
         st.session_state["usuario_logado"] = None
         st.rerun()
