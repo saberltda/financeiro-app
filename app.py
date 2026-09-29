@@ -8,7 +8,7 @@ import streamlit.components.v1 as components
 import secrets
 
 st.set_page_config(
-    page_title="Controle Motorista Pro", 
+    page_title="Saber Uber99", 
     page_icon="🚗", 
     layout="wide",
     initial_sidebar_state="collapsed"
@@ -179,11 +179,11 @@ def verificar_login():
     if st.session_state["usuario_logado"] is not None:
         return True
 
-    # 2. Tela de Login Padrão (Sem nomes expostos)
+    # 2. Tela de Login Padrão
     col_vazia1, col_centro, col_vazia2 = st.columns([1, 2.5, 1])
     with col_centro:
         st.markdown("<div style='height: 40px;'></div>", unsafe_allow_html=True)
-        st.markdown("<h3 style='text-align: center;'>🔒 Acesso ao Sistema</h3>", unsafe_allow_html=True)
+        st.markdown("<h3 style='text-align: center;'>🔒 Saber Uber99</h3>", unsafe_allow_html=True)
         st.caption("<p style='text-align: center;'>Introduza seu e-mail e senha cadastrados:</p>", unsafe_allow_html=True)
 
         with st.form("form_login_seguro"):
@@ -247,18 +247,18 @@ def modal_alterar_senha(user_id):
                 else:
                     st.error(msg)
 
-# --- BARRA SUPERIOR ---
-c_titulo, c_senha, c_sair = st.columns([4.2, 1.4, 1.2])
+# --- BARRA SUPERIOR COMPACTA ---
+c_titulo, c_senha, c_sair = st.columns([8.2, 0.9, 0.9])
 with c_titulo:
-    st.title("🚗 Gestão de Turnos & Finanças")
-    st.caption(f"👤 Conectado como: **{NOME_EXIBICAO}**")
+    st.title("🚗 Saber Uber99")
+    st.caption(f"👤 Conectado: **{NOME_EXIBICAO}**")
 with c_senha:
     st.markdown("<div style='height: 18px;'></div>", unsafe_allow_html=True)
-    if st.button("🔑 Alterar Senha", use_container_width=True):
+    if st.button("🔑", use_container_width=True, help="Alterar Senha"):
         modal_alterar_senha(USUARIO_ID)
 with c_sair:
     st.markdown("<div style='height: 18px;'></div>", unsafe_allow_html=True)
-    if st.button("🚪 Sair", use_container_width=True):
+    if st.button("🚪", use_container_width=True, help="Sair da Conta"):
         st.query_params.clear()
         st.session_state["usuario_logado"] = None
         st.rerun()
