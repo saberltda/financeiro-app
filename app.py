@@ -5,6 +5,7 @@ from zoneinfo import ZoneInfo
 import plotly.express as px
 from sqlalchemy import create_engine, text
 import streamlit.components.v1 as components
+import secrets
 
 st.set_page_config(
     page_title="Controle Motorista Pro", 
@@ -13,13 +14,11 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# Fuso horário oficial de Brasília
 FUSO_SP = ZoneInfo("America/Sao_Paulo")
 
 def obter_data_hoje():
     return datetime.now(FUSO_SP).date()
 
-# Estilização visual moderna e botões grandes para toque no celular
 st.markdown("""
 <style>
     div[data-testid="stMetricValue"] > div {
@@ -43,7 +42,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# Conexão com o Supabase
+# Conexão Supabase
 raw_url = st.secrets["database"]["url"]
 if raw_url.startswith("postgresql://"):
     raw_url = raw_url.replace("postgresql://", "postgresql+psycopg://", 1)
@@ -59,35 +58,59 @@ def get_db_engine():
 
 engine = get_db_engine()
 
-# --- CONSULTAS DE USUÁRIOS E AUTENTICAÇÃO ---
-def listar_motoristas_ativos():
-    try:
-        with engine.connect() as conn:
-            query = text("""
-                SELECT id, COALESCE(nome, email) as nome_exibicao, email, ativo
-                FROM usuarios
-                WHERE ativo = TRUE
-                ORDER BY nome_exibicao ASC;
-            """)
-            result = conn.execute(query).fetchall()
-            return [{"id": r[0], "nome": r[1], "email": r[2], "ativo": bool(r[3])} for r in result]
-    except Exception as e:
-        st.error(f"Erro ao carregar lista de contas: {str(e)}")
-        return []
+# --- ISOLAMENTO SEGURO DE CONTA NO DISPOSITIVO (LOCALSTORAGE DO APARELHO) ---
+def salvar_conta_dispositivo(chave, nome):
+    components.html(f"""
+    <script>
+        try {{
+            window.parent.localStorage.setItem('cmp_disp_chave', '{chave}');
+            window.parent.localStorage.setItem('cmp_disp_nome', '{nome}');
+        }} catch(e) {{}}
+    </script>
+    """, height=0, width=0)
 
-def buscar_usuario_por_id(user_id):
+def limpar_conta_dispositivo():
+    components.html("""
+    <script>
+        try {
+            window.parent.localStorage.removeItem('cmp_disp_chave');
+            window.parent.localStorage.removeItem('cmp_disp_nome');
+            const url = new URL(window.parent.location.href);
+            url.searchParams.delete('acesso');
+            url.searchParams.delete('saved_k');
+            url.searchParams.delete('saved_n');
+            window.parent.history.replaceState({}, '', url.pathname);
+        } catch(e) {}
+    </script>
+    """, height=0, width=0)
+
+def resgatar_conta_dispositivo_js():
+    components.html("""
+    <script>
+        try {
+            const k = window.parent.localStorage.getItem('cmp_disp_chave');
+            const n = window.parent.localStorage.getItem('cmp_disp_nome');
+            const url = new URL(window.parent.location.href);
+            if (k && !url.searchParams.has('saved_k') && !url.searchParams.has('acesso')) {
+                url.searchParams.set('saved_k', k);
+                url.searchParams.set('saved_n', n || '');
+                window.parent.location.replace(url.href);
+            }
+        } catch(e) {}
+    </script>
+    """, height=0, width=0)
+
+# --- OPERAÇÕES DE AUTENTICAÇÃO NO BANCO ---
+def garantir_chave_acesso(user_id):
+    nova_chave = secrets.token_urlsafe(20)
     try:
-        with engine.connect() as conn:
-            query = text("SELECT id, email, nome, ativo FROM usuarios WHERE id = :uid LIMIT 1;")
-            result = conn.execute(query, {"uid": int(user_id)}).fetchone()
-            if result:
-                return {
-                    "id": result[0],
-                    "email": result[1],
-                    "nome": result[2],
-                    "ativo": bool(result[3])
-                }
-            return None
+        with engine.begin() as conn:
+            conn.execute(text("""
+                UPDATE usuarios 
+                SET chave_acesso = :k 
+                WHERE id = :uid AND chave_acesso IS NULL;
+            """), {"k": nova_chave, "uid": user_id})
+        return nova_chave
     except Exception:
         return None
 
@@ -96,14 +119,15 @@ def buscar_usuario_por_chave(chave_acesso):
         return None
     try:
         with engine.connect() as conn:
-            query = text("SELECT id, email, nome, ativo FROM usuarios WHERE chave_acesso = :chave LIMIT 1;")
+            query = text("SELECT id, email, nome, ativo, chave_acesso FROM usuarios WHERE chave_acesso = :chave LIMIT 1;")
             result = conn.execute(query, {"chave": chave_acesso.strip()}).fetchone()
             if result:
                 return {
                     "id": result[0],
                     "email": result[1],
                     "nome": result[2],
-                    "ativo": bool(result[3])
+                    "ativo": bool(result[3]),
+                    "chave_acesso": result[4]
                 }
             return None
     except Exception:
@@ -113,7 +137,7 @@ def autenticar_usuario_senha(email_digitado, senha_digitada):
     try:
         with engine.connect() as conn:
             query = text("""
-                SELECT id, email, nome, ativo
+                SELECT id, email, nome, ativo, chave_acesso
                 FROM usuarios 
                 WHERE LOWER(email) = LOWER(:email) 
                   AND (
@@ -128,75 +152,101 @@ def autenticar_usuario_senha(email_digitado, senha_digitada):
             }).fetchone()
             
             if result:
-                return {
+                user_dict = {
                     "id": result[0],
                     "email": result[1],
                     "nome": result[2],
-                    "ativo": bool(result[3])
+                    "ativo": bool(result[3]),
+                    "chave_acesso": result[4]
                 }
+                if not user_dict["chave_acesso"]:
+                    user_dict["chave_acesso"] = garantir_chave_acesso(user_dict["id"])
+                return user_dict
             return None
-    except Exception as e:
-        st.error(f"Erro ao verificar credenciais: {str(e)}")
+    except Exception:
         return None
 
 def verificar_login():
     if "usuario_logado" not in st.session_state:
         st.session_state["usuario_logado"] = None
 
-    if "mostrar_form_outro_login" not in st.session_state:
-        st.session_state["mostrar_form_outro_login"] = False
+    if "mostrar_form_login" not in st.session_state:
+        st.session_state["mostrar_form_login"] = False
 
-    # Acesso direto via parâmetro de URL
     chave_url = st.query_params.get("acesso")
+    saved_k = st.query_params.get("saved_k")
+    saved_n = st.query_params.get("saved_n", "")
+
+    # Se abriu link direto (?acesso=CHAVE), autentica e já memoriza neste aparelho
     if chave_url and st.session_state["usuario_logado"] is None:
         user_chave = buscar_usuario_por_chave(chave_url)
         if user_chave and user_chave["ativo"]:
             st.session_state["usuario_logado"] = user_chave
+            salvar_conta_dispositivo(user_chave["chave_acesso"], user_chave["nome"] or user_chave["email"])
             return True
+        else:
+            limpar_conta_dispositivo()
+            st.query_params.clear()
 
     if st.session_state["usuario_logado"] is not None:
         return True
 
-    # --- TELA DE ENTRADA ---
+    # Se abriu sem nada na URL, roda o script para verificar se este navegador possui conta memorizada
+    if not chave_url and not saved_k:
+        resgatar_conta_dispositivo_js()
+
+    # --- TELA DE ENTRADA INTELIGENTE ---
     col_vazia1, col_centro, col_vazia2 = st.columns([1, 2.5, 1])
     with col_centro:
         st.markdown("<div style='height: 35px;'></div>", unsafe_allow_html=True)
-        st.markdown("<h2 style='text-align: center;'>🚗 Entrar em conta logada</h2>", unsafe_allow_html=True)
-        st.caption("<p style='text-align: center;'>Selecione o seu perfil para abrir o painel:</p>", unsafe_allow_html=True)
 
-        motoristas = listar_motoristas_ativos()
-
-        if not motoristas:
-            st.info("Nenhuma conta ativa encontrada.")
-        else:
-            for mot in motoristas:
-                label_btn = f"👤 {mot['nome']}"
-                if st.button(label_btn, key=f"btn_user_{mot['id']}", use_container_width=True, type="primary"):
-                    st.session_state["usuario_logado"] = buscar_usuario_por_id(mot["id"])
+        # CENÁRIO 1: O aparelho tem uma conta memorizada (Atalho do Chrome / Navegador do dono)
+        if saved_k and not st.session_state["mostrar_form_login"]:
+            st.markdown("<h2 style='text-align: center;'>🚗 Entrar em conta logada</h2>", unsafe_allow_html=True)
+            st.caption("<p style='text-align: center;'>Identificamos sua conta memorizada neste dispositivo:</p>", unsafe_allow_html=True)
+            
+            nome_botao = saved_n if saved_n else "Meu Perfil"
+            if st.button(f"👤 {nome_botao}", use_container_width=True, type="primary"):
+                user_recuperado = buscar_usuario_por_chave(saved_k)
+                if user_recuperado and user_recuperado["ativo"]:
+                    st.session_state["usuario_logado"] = user_recuperado
+                    st.rerun()
+                else:
+                    limpar_conta_dispositivo()
+                    st.error("Sua sessão expirou ou foi desativada. Faça login novamente.")
                     st.rerun()
 
-        st.markdown("<div style='height: 15px;'></div>", unsafe_allow_html=True)
-        st.markdown("---")
-
-        # Opção para logar com outra conta via e-mail e senha
-        if not st.session_state["mostrar_form_outro_login"]:
+            st.markdown("<div style='height: 15px;'></div>", unsafe_allow_html=True)
+            st.markdown("---")
             if st.button("🔑 Logar em outra conta", use_container_width=True):
-                st.session_state["mostrar_form_outro_login"] = True
+                st.session_state["mostrar_form_login"] = True
                 st.rerun()
+
+        # CENÁRIO 2: Janela Anônima / Aparelho novo (Sem dados vazados)
         else:
-            st.markdown("#### 🔒 Acesso com E-mail e Senha")
-            with st.form("form_login_manual"):
+            st.markdown("<h2 style='text-align: center;'>🔒 Acesso ao Sistema</h2>", unsafe_allow_html=True)
+            st.caption("<p style='text-align: center;'>Introduza seu e-mail e senha para entrar:</p>", unsafe_allow_html=True)
+
+            with st.form("form_login_seguro"):
                 email_input = st.text_input("E-mail:", placeholder="seu_email@exemplo.com").strip().lower()
                 senha_input = st.text_input("Senha:", type="password", placeholder="••••••••")
-                col_b1, col_b2 = st.columns(2)
-                with col_b1:
+                lembrar_aparelho = st.checkbox("Manter logado neste dispositivo", value=True)
+                
+                col_btn1, col_btn2 = st.columns(2) if saved_k else (st.columns(1)[0], None)
+                
+                with col_btn1:
                     btn_entrar = st.form_submit_button("🔓 Entrar", type="primary", use_container_width=True)
-                with col_b2:
-                    btn_voltar = st.form_submit_button("Voltar", use_container_width=True)
+                
+                if col_btn2:
+                    with col_btn2:
+                        btn_voltar = st.form_submit_button("Voltar", use_container_width=True)
+                        if btn_voltar:
+                            st.session_state["mostrar_form_login"] = False
+                            st.rerun()
 
                 if btn_entrar:
                     if not email_input or not senha_input:
-                        st.error("Preencha o e-mail e a senha.")
+                        st.error("Preencha todos os campos.")
                     else:
                         dados = autenticar_usuario_senha(email_input, senha_input)
                         if dados:
@@ -204,26 +254,24 @@ def verificar_login():
                                 st.error("⛔ Sua assinatura está inativa.")
                             else:
                                 st.session_state["usuario_logado"] = dados
-                                st.session_state["mostrar_form_outro_login"] = False
+                                if lembrar_aparelho and dados.get("chave_acesso"):
+                                    salvar_conta_dispositivo(dados["chave_acesso"], dados["nome"] or dados["email"])
+                                st.session_state["mostrar_form_login"] = False
                                 st.rerun()
                         else:
                             st.error("E-mail ou senha incorretos.")
-
-                if btn_voltar:
-                    st.session_state["mostrar_form_outro_login"] = False
-                    st.rerun()
 
     return False
 
 if not verificar_login():
     st.stop()
 
-# Dados do usuário ativo
+# Usuário Ativo
 usuario_atual = st.session_state["usuario_logado"]
 USUARIO_ID = usuario_atual["id"]
 NOME_EXIBICAO = usuario_atual["nome"] if usuario_atual["nome"] else usuario_atual["email"]
 
-# --- BARRA SUPERIOR COM IDENTIFICAÇÃO E TROCA RÁPIDA ---
+# --- BARRA SUPERIOR ---
 c_titulo, c_sair = st.columns([4.2, 1.8])
 with c_titulo:
     st.title("🚗 Gestão de Turnos & Finanças")
@@ -231,9 +279,10 @@ with c_titulo:
 with c_sair:
     st.markdown("<div style='height: 18px;'></div>", unsafe_allow_html=True)
     if st.button("🚪 Trocar de Perfil", use_container_width=True):
+        limpar_conta_dispositivo()
         st.query_params.clear()
         st.session_state["usuario_logado"] = None
-        st.session_state["mostrar_form_outro_login"] = False
+        st.session_state["mostrar_form_login"] = False
         st.rerun()
 
 # Nomenclaturas fixas
@@ -467,7 +516,7 @@ def gerar_dossie_ia(df_periodo, df_km_periodo, d_ini, d_end):
 
     return "\n".join(prompt_linhas)
 
-# Carregamento filtrado pelo usuário selecionado
+# Carregamento filtrado pelo usuário logado
 df_completo = carregar_dados(USUARIO_ID)
 df_turnos_km = carregar_turnos_km(USUARIO_ID)
 
