@@ -6,6 +6,17 @@ import plotly.express as px
 from sqlalchemy import create_engine, text
 import streamlit.components.v1 as components
 import secrets
+import io
+
+# Importações do ReportLab para o Relatório PDF
+from reportlab.lib.pagesizes import A4
+from reportlab.lib import colors
+from reportlab.lib.units import cm
+from reportlab.platypus import (
+    SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, KeepTogether
+)
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.pdfgen import canvas
 
 st.set_page_config(
     page_title="Saber Uber99", 
@@ -22,14 +33,12 @@ def obter_data_hoje():
 # Oculta Share, Menu Streamlit, Rodapé e ajusta espaçamento do topo
 st.markdown("""
 <style>
-    /* Oculta Menu, Botão Share, Barra Superior e Rodapé */
     #MainMenu {visibility: hidden;}
     header {visibility: hidden;}
     footer {visibility: hidden;}
     div[data-testid="stDecoration"] {display: none;}
     div[data-testid="stToolbar"] {visibility: hidden; height: 0%; position: fixed;}
     
-    /* Remove o espaço em branco extra deixado pelo cabeçalho do Streamlit */
     .block-container {
         padding-top: 1.5rem !important;
         padding-bottom: 2rem !important;
@@ -56,7 +65,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# Conexão blindada com o Supabase
+# Conexão com o Supabase
 raw_url = st.secrets["database"]["url"]
 if raw_url.startswith("postgresql://"):
     raw_url = raw_url.replace("postgresql://", "postgresql+psycopg://", 1)
@@ -140,7 +149,7 @@ def autenticar_usuario_senha(email_digitado, senha_digitada):
                     user_dict["chave_acesso"] = garantir_chave_acesso(user_dict["id"])
                 return user_dict
             return None
-    except Exception as e:
+    except Exception:
         st.error("Não foi possível entrar agora. Verifique sua conexão e tente novamente.")
         return None
 
@@ -167,15 +176,14 @@ def atualizar_senha_usuario(user_id, senha_atual, nova_senha):
             """)
             conn.execute(up_query, {"uid": user_id, "nova_senha": nova_senha})
             return True, "Senha alterada com sucesso!"
-    except Exception as e:
+    except Exception:
         return False, "Não foi possível atualizar a senha agora. Tente novamente em instantes."
 
-# --- VERIFICAÇÃO DE LOGIN STRICT (SEM EXPOSIÇÃO DE USUÁRIOS) ---
+# --- VERIFICAÇÃO DE LOGIN STRICT ---
 def verificar_login():
     if "usuario_logado" not in st.session_state:
         st.session_state["usuario_logado"] = None
 
-    # 1. Acesso direto via Link Privado (?acesso=CHAVE)
     chave_url = st.query_params.get("acesso")
     if chave_url and st.session_state["usuario_logado"] is None:
         user_chave = buscar_usuario_por_chave(chave_url)
@@ -193,7 +201,6 @@ def verificar_login():
     if st.session_state["usuario_logado"] is not None:
         return True
 
-    # 2. Tela de Login Padrão
     col_vazia1, col_centro, col_vazia2 = st.columns([1, 2.5, 1])
     with col_centro:
         st.markdown("<div style='height: 40px;'></div>", unsafe_allow_html=True)
@@ -226,7 +233,6 @@ def verificar_login():
 if not verificar_login():
     st.stop()
 
-# Usuário Ativo
 usuario_atual = st.session_state["usuario_logado"]
 USUARIO_ID = usuario_atual["id"]
 NOME_EXIBICAO = usuario_atual["nome"] if usuario_atual["nome"] else usuario_atual["email"]
@@ -235,7 +241,6 @@ CHAVE_ACESSO = usuario_atual.get("chave_acesso", "")
 if CHAVE_ACESSO and st.query_params.get("acesso") != CHAVE_ACESSO:
     st.query_params["acesso"] = CHAVE_ACESSO
 
-# Modal para Alteração de Senha
 @st.dialog("🔑 Alterar Senha")
 def modal_alterar_senha(user_id):
     st.write("Crie uma nova senha de acesso para sua conta.")
@@ -261,7 +266,7 @@ def modal_alterar_senha(user_id):
                 else:
                     st.error(msg)
 
-# --- BARRA SUPERIOR ---
+# Barra Superior
 c_titulo, c_senha, c_sair = st.columns([5.0, 1.4, 1.0])
 with c_titulo:
     st.title("🚗 Saber Uber99")
@@ -277,7 +282,7 @@ with c_sair:
         st.session_state["usuario_logado"] = None
         st.rerun()
 
-# Nomenclaturas fixas
+# Nomenclaturas
 OPCOES_RECEITA_FIXAS = ["Uber sem pedágios", "99 com pedágios", "Pedágio Uber", "Particular"]
 OPCOES_DESPESA_FIXAS = ["Combustível", "Lavagem", "SemParar do dia"]
 
@@ -328,7 +333,7 @@ def converter_km_inteiro(texto):
     except ValueError:
         return None
 
-# Funções de Banco de Dados com Filtro Estrito de Usuário
+# Funções de Banco de Dados
 @st.cache_data(ttl=600)
 def carregar_dados(user_id):
     with engine.connect() as conn:
@@ -438,7 +443,7 @@ def deletar_registro(id_reg, user_id):
         conn.execute(text('DELETE FROM lancamentos WHERE id = :id AND usuario_id = :uid'), {"id": id_reg, "uid": user_id})
     carregar_dados.clear()
 
-# --- PERSISTÊNCIA DO DIA FECHADO NO BANCO DE DADOS ---
+# Persistência de Dia Fechado
 @st.cache_data(ttl=300)
 def verificar_dia_fechado_banco(data_reg, user_id):
     try:
@@ -472,6 +477,169 @@ def reabrir_dia_fechado_banco(data_reg, user_id):
             WHERE data = :data AND usuario_id = :uid;
         """), {"data": data_reg, "uid": user_id})
     verificar_dia_fechado_banco.clear()
+
+# Canvas com Numeração de Páginas para PDF
+class NumeracaoCanvas(canvas.Canvas):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.pages = []
+
+    def showPage(self):
+        self.pages.append(dict(self.__dict__))
+        self._startPage()
+
+    def save(self):
+        num_paginas = len(self.pages)
+        for page in self.pages:
+            self.__dict__.update(page)
+            self.draw_footer(num_paginas)
+            super().showPage()
+        super().save()
+
+    def draw_footer(self, total_paginas):
+        self.saveState()
+        self.setFont("Helvetica", 8)
+        self.setFillColor(colors.HexColor("#718096"))
+        self.setStrokeColor(colors.HexColor("#CBD5E1"))
+        self.setLineWidth(0.5)
+        self.line(1.5 * cm, 1.2 * cm, 19.5 * cm, 1.2 * cm)
+        texto_rodape = f"Saber Uber99 — Relatório Operacional Financeiro | Página {self._pageNumber} de {total_paginas}"
+        self.drawRightString(19.5 * cm, 0.8 * cm, texto_rodape)
+        self.drawString(1.5 * cm, 0.8 * cm, "Documento confidencial gerado eletronicamente")
+        self.restoreState()
+
+# Gerador Executivo de PDF
+def gerar_relatorio_pdf(df_periodo, df_km_periodo, d_ini, d_end, nome_motorista):
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=A4,
+        leftMargin=1.5 * cm,
+        rightMargin=1.5 * cm,
+        topMargin=1.5 * cm,
+        bottomMargin=1.8 * cm
+    )
+
+    styles = getSampleStyleSheet()
+    style_titulo = ParagraphStyle("DocTitle", parent=styles["Heading1"], fontSize=18, leading=22, textColor=colors.HexColor("#1A365D"), fontName="Helvetica-Bold")
+    style_sub = ParagraphStyle("DocSub", parent=styles["Normal"], fontSize=9, leading=13, textColor=colors.HexColor("#4A5568"))
+    style_h2 = ParagraphStyle("DocH2", parent=styles["Heading2"], fontSize=12, leading=16, textColor=colors.HexColor("#2B6CB0"), fontName="Helvetica-Bold", spaceBefore=10, spaceAfter=6)
+    style_card_title = ParagraphStyle("CardT", parent=styles["Normal"], fontSize=8, leading=10, textColor=colors.HexColor("#718096"), alignment=1)
+    style_card_val = ParagraphStyle("CardV", parent=styles["Normal"], fontSize=11, leading=14, textColor=colors.HexColor("#1A202C"), fontName="Helvetica-Bold", alignment=1)
+    style_cell = ParagraphStyle("Cell", parent=styles["Normal"], fontSize=8, leading=11, textColor=colors.HexColor("#2D3748"))
+    style_cell_bold = ParagraphStyle("CellB", parent=style_cell, fontName="Helvetica-Bold")
+
+    tot_rec = df_periodo[df_periodo["tipo"] == "Receita"]["valor"].sum() if not df_periodo.empty else 0.0
+    tot_desp = df_periodo[df_periodo["tipo"] == "Despesa"]["valor"].sum() if not df_periodo.empty else 0.0
+    lucro = tot_rec - tot_desp
+    margem = (lucro / tot_rec * 100) if tot_rec > 0 else 0.0
+
+    tot_km = int(round(df_km_periodo["km_rodado"].dropna().sum())) if not df_km_periodo.empty else 0
+    rec_km = (tot_rec / tot_km) if tot_km > 0 else 0.0
+    custo_km = (tot_desp / tot_km) if tot_km > 0 else 0.0
+    lucro_km = (lucro / tot_km) if tot_km > 0 else 0.0
+
+    dias_trab = df_periodo["data"].dt.date.nunique() if not df_periodo.empty else df_km_periodo["data"].dt.date.nunique()
+
+    story = []
+
+    # Cabeçalho
+    header_data = [
+        [
+            Paragraph("🚗 Saber Uber99", style_titulo),
+            Paragraph(f"<b>Período:</b> {d_ini.strftime('%d/%m/%Y')} até {d_end.strftime('%d/%m/%Y')}<br/><b>Motorista:</b> {nome_motorista}<br/><b>Emissão:</b> {datetime.now(FUSO_SP).strftime('%d/%m/%Y %H:%M')}", style_sub)
+        ]
+    ]
+    t_header = Table(header_data, colWidths=[8.5 * cm, 9.5 * cm])
+    t_header.setStyle(TableStyle([
+        ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+        ('BOTTOMPADDING', (0,0), (-1,-1), 0),
+        ('TOPPADDING', (0,0), (-1,-1), 0),
+    ]))
+    story.append(t_header)
+    story.append(Spacer(1, 0.4 * cm))
+
+    # Indicadores Financeiros
+    story.append(Paragraph("1. Resumo Financeiro Consolidado", style_h2))
+    cards_fin = [
+        [Paragraph("FATURAMENTO BRUTO", style_card_title), Paragraph("DESPESAS TOTAIS", style_card_title), Paragraph("LUCRO LÍQUIDO", style_card_title), Paragraph("MARGEM LÍQUIDA", style_card_title)],
+        [Paragraph(formata_real(tot_rec), style_card_val), Paragraph(formata_real(tot_desp), style_card_val), Paragraph(formata_real(lucro), style_card_val), Paragraph(f"{margem:.1f}%", style_card_val)]
+    ]
+    t_cards_fin = Table(cards_fin, colWidths=[4.5 * cm] * 4)
+    t_cards_fin.setStyle(TableStyle([
+        ('BACKGROUND', (0,0), (-1,-1), colors.HexColor("#F7FAFC")),
+        ('BOX', (0,0), (-1,-1), 1, colors.HexColor("#E2E8F0")),
+        ('INNERGRID', (0,0), (-1,-1), 0.5, colors.HexColor("#E2E8F0")),
+        ('TOPPADDING', (0,0), (-1,-1), 6),
+        ('BOTTOMPADDING', (0,0), (-1,-1), 6),
+    ]))
+    story.append(t_cards_fin)
+    story.append(Spacer(1, 0.3 * cm))
+
+    # Indicadores Operacionais de Quilometragem
+    story.append(Paragraph("2. Performance Operacional por Quilômetro", style_h2))
+    cards_km = [
+        [Paragraph("KM TRABALHADOS", style_card_title), Paragraph("R$ / KM FATURADO", style_card_title), Paragraph("CUSTO / KM RODADO", style_card_title), Paragraph("LUCRO REAL / KM", style_card_title)],
+        [Paragraph(formata_km(tot_km), style_card_val), Paragraph(formata_real(rec_km), style_card_val), Paragraph(formata_real(custo_km), style_card_val), Paragraph(formata_real(lucro_km), style_card_val)]
+    ]
+    t_cards_km = Table(cards_km, colWidths=[4.5 * cm] * 4)
+    t_cards_km.setStyle(TableStyle([
+        ('BACKGROUND', (0,0), (-1,-1), colors.HexColor("#F7FAFC")),
+        ('BOX', (0,0), (-1,-1), 1, colors.HexColor("#E2E8F0")),
+        ('INNERGRID', (0,0), (-1,-1), 0.5, colors.HexColor("#E2E8F0")),
+        ('TOPPADDING', (0,0), (-1,-1), 6),
+        ('BOTTOMPADDING', (0,0), (-1,-1), 6),
+    ]))
+    story.append(t_cards_km)
+    story.append(Spacer(1, 0.4 * cm))
+
+    # Tabela Detalhada de Lançamentos
+    story.append(Paragraph(f"3. Lançamentos Detalhados do Período ({len(df_periodo)} registros | {dias_trab} dia(s) trabalhados)", style_h2))
+
+    if not df_periodo.empty:
+        col_widths = [2.2 * cm, 2.0 * cm, 4.3 * cm, 2.5 * cm, 7.0 * cm]
+        table_rows = [
+            [
+                Paragraph("<b>Data</b>", style_cell_bold),
+                Paragraph("<b>Tipo</b>", style_cell_bold),
+                Paragraph("<b>Categoria</b>", style_cell_bold),
+                Paragraph("<b>Valor</b>", style_cell_bold),
+                Paragraph("<b>Observação</b>", style_cell_bold)
+            ]
+        ]
+
+        df_sorted = df_periodo.sort_values(by=["data", "id"], ascending=[True, True])
+        for _, r in df_sorted.iterrows():
+            t_cor = "#22543D" if r["tipo"] == "Receita" else "#742A2A"
+            style_t_tipo = ParagraphStyle("TTipo", parent=style_cell_bold, textColor=colors.HexColor(t_cor))
+            
+            table_rows.append([
+                Paragraph(r["data"].strftime("%d/%m/%Y"), style_cell),
+                Paragraph(r["tipo"], style_t_tipo),
+                Paragraph(str(r["categoria"]), style_cell),
+                Paragraph(formata_real(r["valor"]), style_cell_bold),
+                Paragraph(str(r["descricao"]) if r["descricao"] else "-", style_cell)
+            ])
+
+        t_lanc = Table(table_rows, colWidths=col_widths, repeatRows=1)
+        t_lanc.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor("#EDF2F7")),
+            ('BOTTOMPADDING', (0, 0), (-1, 0), 5),
+            ('TOPPADDING', (0, 0), (-1, 0), 5),
+            ('ALIGN', (3, 0), (3, -1), 'RIGHT'),
+            ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor("#CBD5E1")),
+            ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor("#F8FAFC")]),
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            ('TOPPADDING', (0, 1), (-1, -1), 4),
+            ('BOTTOMPADDING', (0, 1), (-1, -1), 4),
+        ]))
+        story.append(t_lanc)
+    else:
+        story.append(Paragraph("Nenhum lançamento financeiro registrado neste período.", style_cell))
+
+    doc.build(story, canvasmaker=NumeracaoCanvas)
+    buffer.seek(0)
+    return buffer.getvalue()
 
 # Gerador de Dossiê para IA
 def gerar_dossie_ia(df_periodo, df_km_periodo, d_ini, d_end):
@@ -550,7 +718,6 @@ df_turnos_km = carregar_turnos_km(USUARIO_ID)
 if "msg_sucesso" in st.session_state:
     st.success(st.session_state.pop("msg_sucesso"))
 
-# Estado da data
 if "data_operacao" not in st.session_state:
     st.session_state["data_operacao"] = obter_data_hoje()
 
@@ -583,7 +750,7 @@ def modal_editar_turno(turno_id, km_ini_atual, km_fim_atual):
         if st.button("✖️ Cancelar", use_container_width=True):
             st.rerun()
 
-# Modal Dinâmico de Edição de Lançamento Específico
+# Modal Dinâmico de Edição de Lançamento
 @st.dialog("✏️ Editar Lançamento")
 def modal_editar_lancamento_dia(data_ref, lancamentos_dia_df):
     if lancamentos_dia_df.empty:
@@ -616,7 +783,7 @@ def modal_editar_lancamento_dia(data_ref, lancamentos_dia_df):
         with col_b1:
             btn_salvar = st.form_submit_button("💾 Salvar", type="primary", use_container_width=True)
         with col_b2:
-            btn_excluir = st.form_submit_button("🗑️ Excluir", use_container_width=True)
+            btn_excluir = st.form_submit_button("🗑️️ Excluir", use_container_width=True)
 
         if btn_salvar:
             v_num = converter_valor(novo_val_str)
@@ -633,7 +800,7 @@ def modal_editar_lancamento_dia(data_ref, lancamentos_dia_df):
             st.session_state["confirmar_excluir_val"] = formata_real(item_ativo["valor"])
             st.rerun()
 
-# --- NOVO MODAL DEDICADO: LANÇAMENTOS DO DIA ---
+# Modal Lançamentos do Dia
 @st.dialog("📝 Lançamentos do Dia")
 def modal_tela_lancamentos(data_ref, df_lanc_hoje):
     st.caption(f"🗓️ Data ativa: **{data_ref.strftime('%d/%m/%Y')}**")
@@ -702,7 +869,7 @@ def modal_tela_lancamentos(data_ref, df_lanc_hoje):
                         st.session_state["confirmar_excluir_val"] = formata_real(r["valor"])
                         st.rerun()
 
-# Modal Padrão de Edição (Aba Histórico)
+# Modal Padrão de Edição
 @st.dialog("✏️ Editar Lançamento")
 def modal_editar_registro(item_id, item_data, item_tipo, item_cat, item_desc, item_val):
     badge = "🟢" if item_tipo == "Receita" else "🔴"
@@ -736,7 +903,7 @@ def modal_excluir_registro(item_id, item_cat, item_val_formatado):
             st.session_state["msg_sucesso"] = "Lançamento excluído com sucesso!"
             st.rerun()
     with col2:
-        if st.button("✖️ Cancelar", use_container_width=True):
+        if st.button("✖️️ Cancelar", use_container_width=True):
             st.rerun()
 
 @st.dialog("🗑️ Confirmar exclusão do turno")
@@ -802,12 +969,11 @@ with tab_operacao:
     qtd_turnos = len(turnos_do_dia)
     qtd_turnos_fechados = int((~turnos_do_dia["km_final"].isnull()).sum()) if not turnos_do_dia.empty else 0
 
-    # Consulta ao Banco para saber se o dia está fechado
     dia_fechado_banco = verificar_dia_fechado_banco(data_atual, USUARIO_ID)
     em_modo_edicao = st.session_state.get(f"modo_edicao_{data_str_chave}", False)
     dia_esta_travado = dia_fechado_banco and not em_modo_edicao
 
-    # --- RESUMO DO DIA (sempre no topo) ---
+    # Resumo do Dia
     st.markdown("---")
     with st.container(border=True):
         st.markdown(f"##### 📋 Resumo do dia — {data_atual.strftime('%d/%m/%Y')}")
@@ -832,7 +998,7 @@ with tab_operacao:
         if dia_esta_travado:
             st.caption("🔒 Dia concluído (salvo). Para alterar, use **Corrigir o dia** na seção 3.")
 
-    # --- SEÇÃO 1: TURNOS DE QUILOMETRAGEM ---
+    # Seção 1: Turnos de Trabalho
     st.markdown("---")
     st.markdown("#### 🚗 1. Turnos de trabalho (quilometragem)")
 
@@ -919,7 +1085,7 @@ with tab_operacao:
                         st.session_state["msg_sucesso"] = f"Turno iniciado em {val_ki:,} km!".replace(",", ".")
                         st.rerun()
 
-    # --- SEÇÃO 2: GANHOS E CUSTOS DO DIA (fluxo único) ---
+    # Seção 2: Ganhos e Custos do Dia
     st.markdown("---")
     st.markdown("#### 💵 2. Ganhos e custos do dia")
 
@@ -968,7 +1134,7 @@ with tab_operacao:
                         st.session_state["confirmar_excluir_val"] = formata_real(row["valor"])
                         st.rerun()
 
-    # --- SEÇÃO 3: CONCLUIR O DIA (PERSISTÊNCIA COMPLETA NO SUPABASE) ---
+    # Seção 3: Concluir o Dia
     st.markdown("---")
     st.markdown("#### 🏁 3. Concluir o dia")
 
@@ -1235,11 +1401,15 @@ if not df_f.empty:
             hide_index=True
         )
 
-        col_exp1, col_exp2 = st.columns(2)
+        # Três botões de exportação integrados
+        col_exp1, col_exp2, col_exp3 = st.columns(3)
         with col_exp1:
             csv_data = df_tab[["id", "data", "tipo", "categoria", "valor", "descricao"]].to_csv(index=False).encode('utf-8')
             st.download_button(label="📥 Baixar Dados (CSV)", data=csv_data, file_name="financeiro.csv", mime="text/csv", use_container_width=True)
         with col_exp2:
+            pdf_bytes = gerar_relatorio_pdf(df_tab, df_km_f, d_inicio, d_fim, NOME_EXIBICAO)
+            st.download_button(label="📄 Baixar Relatório (PDF)", data=pdf_bytes, file_name=f"relatorio_saber_{d_inicio.strftime('%Y%m%d')}_{d_fim.strftime('%Y%m%d')}.pdf", mime="application/pdf", use_container_width=True)
+        with col_exp3:
             dossie_txt = gerar_dossie_ia(df_f, df_km_f, d_inicio, d_fim)
             st.download_button(label="🤖 Baixar Dossiê para IA (.md)", data=dossie_txt.encode('utf-8'), file_name="dossie_ia.md", mime="text/markdown", type="primary", use_container_width=True)
 else:
