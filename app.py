@@ -282,6 +282,7 @@ with c_sair:
         st.query_params.clear()
         st.session_state["usuario_logado"] = None
         st.session_state["tela_atual"] = "inicio"
+        st.session_state.pop("confirmar_fechar_turno_anterior", None)
         st.rerun()
 
 # Nomenclaturas
@@ -932,11 +933,87 @@ def modal_excluir_turno(turno_id, km_ini, km_fim):
         if st.button("✖️ Cancelar", use_container_width=True):
             st.rerun()
 
+def buscar_ultimo_turno_anterior_aberto(data_atual):
+    if df_turnos_km.empty:
+        return None
+    data_anterior = data_atual - timedelta(days=1)
+    turnos_anterior = df_turnos_km[df_turnos_km["data"].dt.date == data_anterior].sort_values("id")
+    if turnos_anterior.empty:
+        return None
+    ultimo_turno = turnos_anterior.iloc[-1]
+    if pd.isnull(ultimo_turno["km_final"]):
+        return {
+            "id": int(ultimo_turno["id"]),
+            "data": data_anterior,
+            "km_inicial": int(ultimo_turno["km_inicial"]),
+        }
+    return None
+
+@st.dialog("⏳ Turno do dia anterior em aberto")
+def modal_confirmar_fechar_turno_anterior(dados):
+    data_ant = dados["data_anterior"]
+    data_novo = dados["data_novo_turno"]
+    t_ant_id = dados["turno_ant_id"]
+    km_ant_ini = dados["turno_ant_km_ini"]
+    km_novo = dados["km_novo_turno"]
+
+    st.write(
+        f"O último turno do dia anterior (**{data_ant.strftime('%d/%m/%Y')}**, Turno #{t_ant_id}) "
+        f"ainda está aberto, iniciado em **{km_ant_ini:,} km**.".replace(",", ".")
+    )
+
+    if km_novo < km_ant_ini:
+        st.warning(
+            f"⚠️ O odômetro informado (**{km_novo:,} km**) é menor que o KM inicial do turno anterior "
+            f"(**{km_ant_ini:,} km**), por isso não é possível fechá-lo com esta quilometragem.".replace(",", ".")
+        )
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("🟢 Apenas iniciar novo turno", type="primary", use_container_width=True):
+                abrir_novo_turno(data_novo, km_novo, USUARIO_ID)
+                st.session_state["msg_sucesso"] = f"Turno iniciado em {km_novo:,} km!".replace(",", ".")
+                st.rerun()
+        with col2:
+            if st.button("✖️ Cancelar", use_container_width=True):
+                st.rerun()
+    else:
+        km_rodado_ant = km_novo - km_ant_ini
+        st.info(
+            f"Deseja fechar o último turno de **{data_ant.strftime('%d/%m/%Y')}** com "
+            f"**{km_novo:,} km** (**+{km_rodado_ant:,} km rodados**) e iniciar o turno de "
+            f"**{data_novo.strftime('%d/%m/%Y')}** com esta mesma quilometragem?".replace(",", ".")
+        )
+        if st.button(
+            f"✔️ Sim, fechar turno anterior ({km_novo:,} km) e iniciar novo turno".replace(",", "."),
+            type="primary",
+            use_container_width=True
+        ):
+            fechar_turno(t_ant_id, km_novo, km_rodado_ant, USUARIO_ID)
+            abrir_novo_turno(data_novo, km_novo, USUARIO_ID)
+            st.session_state["msg_sucesso"] = (
+                f"Turno de {data_ant.strftime('%d/%m/%Y')} fechado (+{km_rodado_ant:,} km) "
+                f"e novo turno iniciado em {km_novo:,} km!".replace(",", ".")
+            )
+            st.rerun()
+
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("🟢 Não, apenas iniciar novo turno", use_container_width=True):
+                abrir_novo_turno(data_novo, km_novo, USUARIO_ID)
+                st.session_state["msg_sucesso"] = f"Turno iniciado em {km_novo:,} km!".replace(",", ".")
+                st.rerun()
+        with col2:
+            if st.button("✖️ Cancelar", use_container_width=True):
+                st.rerun()
+
 if st.session_state.get("confirmar_excluir_id"):
     _eid = st.session_state.pop("confirmar_excluir_id")
     _ecat = st.session_state.pop("confirmar_excluir_cat", "")
     _eval = st.session_state.pop("confirmar_excluir_val", "")
     modal_excluir_registro(_eid, _ecat, _eval)
+elif st.session_state.get("confirmar_fechar_turno_anterior"):
+    _dados_turno_ant = st.session_state.pop("confirmar_fechar_turno_anterior")
+    modal_confirmar_fechar_turno_anterior(_dados_turno_ant)
 
 
 
@@ -1213,9 +1290,20 @@ elif tela_atual == "turnos":
                     if val_ki is None or val_ki <= 0:
                         st.error("Informe uma quilometragem inicial válida (número inteiro).")
                     else:
-                        abrir_novo_turno(data_atual, val_ki, USUARIO_ID)
-                        st.session_state["msg_sucesso"] = f"Turno iniciado em {val_ki:,} km!".replace(",", ".")
-                        st.rerun()
+                        turno_ant_aberto = buscar_ultimo_turno_anterior_aberto(data_atual) if turnos_do_dia.empty else None
+                        if turno_ant_aberto is not None:
+                            st.session_state["confirmar_fechar_turno_anterior"] = {
+                                "data_novo_turno": data_atual,
+                                "km_novo_turno": val_ki,
+                                "data_anterior": turno_ant_aberto["data"],
+                                "turno_ant_id": turno_ant_aberto["id"],
+                                "turno_ant_km_ini": turno_ant_aberto["km_inicial"],
+                            }
+                            st.rerun()
+                        else:
+                            abrir_novo_turno(data_atual, val_ki, USUARIO_ID)
+                            st.session_state["msg_sucesso"] = f"Turno iniciado em {val_ki:,} km!".replace(",", ".")
+                            st.rerun()
 
 # --------------------------------------------------------------
 # TELA 2: GANHOS E CUSTOS DO DIA
